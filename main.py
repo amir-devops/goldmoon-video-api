@@ -1,30 +1,36 @@
-import io
 import os
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, HttpUrl
 
 app = FastAPI(title="Goldmoon Egypt Tours Video Renderer")
 
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
-OVERLAY_TOP = 760
-OVERLAY_BOTTOM = 1160
-OVERLAY_ALPHA = 150
-MAX_TEXT_WIDTH = 800
-FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-FONT_SIZE = 52
-LINE_SPACING = 12
+VIDEO_DURATION = 6
+FRAMERATE = 30
+TOTAL_FRAMES = VIDEO_DURATION * FRAMERATE
+FONT_SIZE = 54
+WRAP_CHARS = 28
+OVERLAY_Y = 760
+OVERLAY_H = 400
+OVERLAY_CENTER_Y = OVERLAY_Y + OVERLAY_H // 2
+
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+
 COLOR_HOOK = "white"
-COLOR_CTA = "#FFD700"
-SCENE_DURATION = 3
-FRAMERATE = 24
+COLOR_CTA = "0xFFD700"
+SHADOW_COLOR = "black@0.55"
+SHADOW_OFFSET = 3
 
 
 class RenderRequest(BaseModel):
@@ -33,153 +39,150 @@ class RenderRequest(BaseModel):
     text_scene_2: str
 
 
-def load_font(size: int = FONT_SIZE) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    font_path = Path(FONT_PATH)
-    if font_path.exists():
-        return ImageFont.truetype(str(font_path), size=size)
-    return ImageFont.load_default()
+def resolve_font_path() -> str:
+    for candidate in FONT_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    raise HTTPException(
+        status_code=500,
+        detail="No suitable bold system font found for text rendering.",
+    )
 
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-
-    lines: list[str] = []
-    current_line = words[0]
-
-    for word in words[1:]:
-        candidate = f"{current_line} {word}"
-        bbox = font.getbbox(candidate)
-        line_width = bbox[2] - bbox[0]
-        if line_width <= max_width:
-            current_line = candidate
-        else:
-            lines.append(current_line)
-            current_line = word
-
-    lines.append(current_line)
-    return lines
+def escape_drawtext(text: str) -> str:
+    escaped = text.strip()
+    replacements = {
+        "\\": "\\\\",
+        ":": "\\:",
+        "'": "\\'",
+        "%": "\\%",
+        "[": "\\[",
+        "]": "\\]",
+    }
+    for source, target in replacements.items():
+        escaped = escaped.replace(source, target)
+    return escaped
 
 
-def measure_text_block(
-    lines: list[str], font: ImageFont.FreeTypeFont
-) -> tuple[int, int]:
+def wrap_text_block(text: str, width: int = WRAP_CHARS) -> str:
+    lines = textwrap.wrap(text.strip(), width=width)
     if not lines:
-        return 0, 0
-
-    max_width = 0
-    total_height = 0
-
-    for index, line in enumerate(lines):
-        bbox = font.getbbox(line)
-        line_width = bbox[2] - bbox[0]
-        line_height = bbox[3] - bbox[1]
-        max_width = max(max_width, line_width)
-        total_height += line_height
-        if index < len(lines) - 1:
-            total_height += LINE_SPACING
-
-    return max_width, total_height
+        return ""
+    return "\\n".join(escape_drawtext(line) for line in lines)
 
 
-def draw_centered_text(
-    draw: ImageDraw.ImageDraw,
-    lines: list[str],
-    font: ImageFont.FreeTypeFont,
-    color: str,
-    box_top: int,
-    box_bottom: int,
-) -> None:
-    block_width, block_height = measure_text_block(lines, font)
-    box_height = box_bottom - box_top
-    start_y = box_top + (box_height - block_height) // 2
-
-    current_y = start_y
-    for line in lines:
-        bbox = font.getbbox(line)
-        line_width = bbox[2] - bbox[0]
-        line_height = bbox[3] - bbox[1]
-        x = (CANVAS_WIDTH - line_width) // 2
-        draw.text((x, current_y), line, font=font, fill=color)
-        current_y += line_height + LINE_SPACING
+def scene_alpha_expression(scene_index: int) -> str:
+    if scene_index == 1:
+        return "if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,2.5)\\,(3-t)*2\\,1))"
+    return "if(lt(t\\,3.5)\\,(t-3)*2\\,if(gt(t\\,5.5)\\,(6-t)*2\\,1))"
 
 
-def fetch_background_image(image_url: str) -> Image.Image:
+def build_drawtext_layer(
+    font_path: str,
+    text: str,
+    font_color: str,
+    start: float,
+    end: float,
+    scene_index: int,
+    shadow: bool = False,
+) -> str:
+    escaped_font = font_path.replace(":", "\\:")
+    y_expr = f"({OVERLAY_CENTER_Y}-text_h/2)"
+    if shadow:
+        x_expr = f"(w-text_w)/2+{SHADOW_OFFSET}"
+        y_expr = f"({OVERLAY_CENTER_Y}-text_h/2)+{SHADOW_OFFSET}"
+        font_color = SHADOW_COLOR
+    else:
+        x_expr = "(w-text_w)/2"
+
+    alpha = scene_alpha_expression(scene_index)
+    return (
+        f"drawtext=fontfile={escaped_font}:text='{text}':"
+        f"fontcolor={font_color}:fontsize={FONT_SIZE}:"
+        f"x={x_expr}:y={y_expr}:"
+        f"line_spacing=8:"
+        f"enable='between(t\\,{start}\\,{end})':"
+        f"alpha='{alpha}'"
+    )
+
+
+def build_filter_complex(font_path: str, hook_text: str, cta_text: str) -> str:
+    ken_burns = (
+        f"scale=8000:-1,"
+        f"zoompan=z='min(zoom+0.0015\\,1.35)':d={TOTAL_FRAMES}:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:fps={FRAMERATE}"
+    )
+    color_grade = "eq=contrast=1.08:saturation=1.14:brightness=0.02:gamma=1.02"
+    vignette = "vignette=angle=PI/4:mode=forward:a=0.38"
+    overlay_box = (
+        f"drawbox=x=0:y={OVERLAY_Y}:w=iw:h={OVERLAY_H}:"
+        f"color=black@0.58:t=fill"
+    )
+    film_grain = "noise=c0s=5:c0f=t"
+
+    hook_shadow = build_drawtext_layer(
+        font_path, hook_text, COLOR_HOOK, 0, 3, 1, shadow=True
+    )
+    hook_main = build_drawtext_layer(font_path, hook_text, COLOR_HOOK, 0, 3, 1)
+    cta_shadow = build_drawtext_layer(
+        font_path, cta_text, COLOR_CTA, 3, 6, 2, shadow=True
+    )
+    cta_main = build_drawtext_layer(font_path, cta_text, COLOR_CTA, 3, 6, 2)
+
+    return (
+        f"[0:v]{ken_burns},{color_grade},{vignette},"
+        f"{overlay_box},{film_grain},"
+        f"{hook_shadow},{hook_main},"
+        f"{cta_shadow},{cta_main}[v]"
+    )
+
+
+def download_image(image_url: str, destination: Path) -> None:
     try:
         response = requests.get(image_url, timeout=30)
         response.raise_for_status()
-        image = Image.open(io.BytesIO(response.content)).convert("RGB")
-        return image
+        destination.write_bytes(response.content)
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=400,
             detail=f"Failed to fetch image from URL: {exc}",
         ) from exc
-    except (IOError, OSError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid or unreadable image data: {exc}",
-        ) from exc
 
 
-def prepare_base_frame(background: Image.Image) -> Image.Image:
-    resized = background.resize(
-        (CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS
-    )
-    frame = resized.convert("RGBA")
+def render_cinematic_video(
+    input_path: Path, output_path: Path, hook_text: str, cta_text: str
+) -> None:
+    font_path = resolve_font_path()
+    wrapped_hook = wrap_text_block(hook_text)
+    wrapped_cta = wrap_text_block(cta_text)
+    filter_complex = build_filter_complex(font_path, wrapped_hook, wrapped_cta)
 
-    overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle(
-        [(0, OVERLAY_TOP), (CANVAS_WIDTH, OVERLAY_BOTTOM)],
-        fill=(0, 0, 0, OVERLAY_ALPHA),
-    )
-
-    return Image.alpha_composite(frame, overlay)
-
-
-def render_scene_frame(base_frame: Image.Image, text: str, color: str) -> Image.Image:
-    frame = base_frame.copy()
-    draw = ImageDraw.Draw(frame)
-    font = load_font()
-    lines = wrap_text(text, font, MAX_TEXT_WIDTH)
-    draw_centered_text(
-        draw, lines, font, color, OVERLAY_TOP, OVERLAY_BOTTOM
-    )
-    return frame.convert("RGB")
-
-
-def compile_video(scene1_path: Path, scene2_path: Path, output_path: Path) -> None:
     command = [
         "ffmpeg",
         "-y",
         "-loop",
         "1",
-        "-framerate",
-        str(FRAMERATE),
-        "-t",
-        str(SCENE_DURATION),
         "-i",
-        str(scene1_path),
-        "-loop",
-        "1",
-        "-framerate",
-        str(FRAMERATE),
-        "-t",
-        str(SCENE_DURATION),
-        "-i",
-        str(scene2_path),
+        str(input_path),
         "-filter_complex",
-        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        filter_complex,
         "-map",
         "[v]",
         "-c:v",
         "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-t",
+        str(VIDEO_DURATION),
         "-pix_fmt",
         "yuv420p",
         "-r",
         str(FRAMERATE),
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
 
@@ -188,7 +191,7 @@ def compile_video(scene1_path: Path, scene2_path: Path, output_path: Path) -> No
             command,
             check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
         raise HTTPException(
@@ -196,9 +199,10 @@ def compile_video(scene1_path: Path, scene2_path: Path, output_path: Path) -> No
             detail="FFmpeg is not installed or not available in PATH.",
         ) from exc
     except subprocess.CalledProcessError as exc:
+        error_msg = exc.stderr.decode(errors="replace").strip()
         raise HTTPException(
             status_code=500,
-            detail=f"FFmpeg rendering failed with exit code {exc.returncode}.",
+            detail=f"FFmpeg rendering failed: {error_msg or exc.returncode}",
         ) from exc
 
 
@@ -213,19 +217,15 @@ def render_video(
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             work_dir = Path(temp_dir)
-            scene1_path = work_dir / "scene1.jpg"
-            scene2_path = work_dir / "scene2.jpg"
+            input_image = work_dir / "input.jpg"
 
-            background = fetch_background_image(str(payload.image_url))
-            base_frame = prepare_base_frame(background)
-
-            scene1 = render_scene_frame(base_frame, payload.text_scene_1, COLOR_HOOK)
-            scene2 = render_scene_frame(base_frame, payload.text_scene_2, COLOR_CTA)
-
-            scene1.save(scene1_path, format="JPEG", quality=95)
-            scene2.save(scene2_path, format="JPEG", quality=95)
-
-            compile_video(scene1_path, scene2_path, output_path)
+            download_image(str(payload.image_url), input_image)
+            render_cinematic_video(
+                input_image,
+                output_path,
+                payload.text_scene_1,
+                payload.text_scene_2,
+            )
 
         if not output_path.exists() or output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
@@ -238,7 +238,7 @@ def render_video(
         return FileResponse(
             path=str(output_path),
             media_type="video/mp4",
-            filename="goldmoon_short.mp4",
+            filename="goldmoon_video.mp4",
         )
     except HTTPException:
         output_path.unlink(missing_ok=True)
