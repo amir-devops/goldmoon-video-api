@@ -1,8 +1,8 @@
 ---
 title: Goldmoon Video API
 emoji: 🎬
-colorFrom: gold
-colorTo: yellow
+colorFrom: yellow
+colorTo: purple
 sdk: docker
 pinned: false
 ---
