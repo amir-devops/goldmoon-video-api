@@ -1,65 +1,77 @@
 import os
 import subprocess
-import tempfile
 import textwrap
+import uuid
 from pathlib import Path
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 
 app = FastAPI(title="Goldmoon Egypt Tours Video Renderer")
 
-CANVAS_WIDTH = 1080
-CANVAS_HEIGHT = 1920
+APP_DIR = Path(os.getenv("APP_DIR", "/app"))
+ASSETS_DIR = APP_DIR / "assets"
+SOUNDS_DIR = APP_DIR / "sounds"
+TYPING_SFX = ASSETS_DIR / "typing.mp3"
+FALLBACK_MUSIC = ASSETS_DIR / "music_epic.mp3"
+MUSIC_SEARCH_DIRS = (ASSETS_DIR, SOUNDS_DIR, APP_DIR)
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FALLBACK_FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 VIDEO_DURATION = 6
 FRAMERATE = 30
 TOTAL_FRAMES = VIDEO_DURATION * FRAMERATE
 FONT_SIZE = 54
 WRAP_CHARS = 28
-OVERLAY_Y = 760
-OVERLAY_H = 400
-OVERLAY_CENTER_Y = OVERLAY_Y + OVERLAY_H // 2
-
-FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-]
-
-COLOR_HOOK = "white"
-COLOR_CTA = "0xFFD700"
-SHADOW_COLOR = "black@0.55"
-SHADOW_OFFSET = 3
 
 
-class RenderRequest(BaseModel):
-    image_url: HttpUrl
+class VideoRequest(BaseModel):
+    image_url: str
     text_scene_1: str
     text_scene_2: str
+    bg_music: str
 
 
 def resolve_font_path() -> str:
-    for candidate in FONT_CANDIDATES:
-        if Path(candidate).exists():
-            return candidate
+    if Path(FONT_PATH).exists():
+        return FONT_PATH
+    if Path(FALLBACK_FONT).exists():
+        return FALLBACK_FONT
     raise HTTPException(
         status_code=500,
         detail="No suitable bold system font found for text rendering.",
     )
 
 
+def resolve_bg_music(music_filename: str) -> Path:
+    safe_name = Path(music_filename).name
+    for folder in MUSIC_SEARCH_DIRS:
+        selected_music = folder / safe_name
+        if selected_music.exists():
+            return selected_music
+    if FALLBACK_MUSIC.exists():
+        return FALLBACK_MUSIC
+    for folder in (SOUNDS_DIR, ASSETS_DIR):
+        mp3_files = sorted(folder.glob("*.mp3"))
+        if mp3_files:
+            return mp3_files[0]
+    raise HTTPException(
+        status_code=500,
+        detail=f"Background music not found: {safe_name} (fallback missing too).",
+    )
+
+
 def escape_drawtext(text: str) -> str:
     escaped = text.strip()
-    replacements = {
+    for source, target in {
         "\\": "\\\\",
         ":": "\\:",
         "'": "\\'",
         "%": "\\%",
         "[": "\\[",
         "]": "\\]",
-    }
-    for source, target in replacements.items():
+    }.items():
         escaped = escaped.replace(source, target)
     return escaped
 
@@ -71,92 +83,72 @@ def wrap_text_block(text: str, width: int = WRAP_CHARS) -> str:
     return "\\n".join(escape_drawtext(line) for line in lines)
 
 
-def scene_alpha_expression(scene_index: int) -> str:
-    if scene_index == 1:
-        return "if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,2.5)\\,(3-t)*2\\,1))"
-    return "if(lt(t\\,3.5)\\,(t-3)*2\\,if(gt(t\\,5.5)\\,(6-t)*2\\,1))"
-
-
-def build_drawtext_layer(
-    font_path: str,
-    text: str,
-    font_color: str,
-    start: float,
-    end: float,
-    scene_index: int,
-    shadow: bool = False,
-) -> str:
+def build_video_filters(font_path: str, hook_text: str, cta_text: str) -> str:
     escaped_font = font_path.replace(":", "\\:")
-    y_expr = f"({OVERLAY_CENTER_Y}-text_h/2)"
-    if shadow:
-        x_expr = f"(w-text_w)/2+{SHADOW_OFFSET}"
-        y_expr = f"({OVERLAY_CENTER_Y}-text_h/2)+{SHADOW_OFFSET}"
-        font_color = SHADOW_COLOR
+    return (
+        f"[0:v]scale=8000:-1,"
+        f"zoompan=z='min(zoom+0.0015\\,1.3)':d={TOTAL_FRAMES}:"
+        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,"
+        f"vignette=angle=0.5:contrast=1.1,"
+        f"drawbox=y=ih-600:w=iw:h=400:color=black@0.6:t=fill,"
+        f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
+        f"x=(w-text_w)/2:y=ih-520:line_spacing=8:"
+        f"enable='between(t\\,0\\,3)':alpha='if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,2.5)\\,(3-t)*2\\,1))',"
+        f"drawtext=fontfile={escaped_font}:text='{cta_text}':fontcolor=0x00D7FF:fontsize={FONT_SIZE}:"
+        f"x=(w-text_w)/2:y=ih-520:line_spacing=8:"
+        f"enable='between(t\\,3\\,6)':alpha='if(lt(t\\,3.5)\\,(t-3)*2\\,if(gt(t\\,5.5)\\,(6-t)*2\\,1))'[v]"
+    )
+
+
+def build_audio_filters(include_typing_sfx: bool) -> str:
+    if include_typing_sfx:
+        return (
+            "[1:a]volume=0.20,afade=t=out:st=5.5:d=0.5[bg];"
+            "[2:a]asplit=2[sfx1_raw][sfx2_raw];"
+            "[sfx1_raw]atrim=0:2,volume=0.8[sfx1];"
+            "[sfx2_raw]atrim=0:2,adelay=3000|3000,volume=0.8[sfx2];"
+            "[bg][sfx1][sfx2]amix=inputs=3:duration=first:dropout_transition=0[a]"
+        )
+    return "[1:a]volume=0.20,afade=t=out:st=5.5:d=0.5[a]"
+
+
+@app.post("/render")
+def render_video(
+    data: VideoRequest, background_tasks: BackgroundTasks
+) -> FileResponse:
+    unique_id = uuid.uuid4().hex
+    input_image = APP_DIR / f"input_{unique_id}.jpg"
+    output_video = APP_DIR / f"output_{unique_id}.mp4"
+
+    if not TYPING_SFX.exists():
+        typing_sfx = None
     else:
-        x_expr = "(w-text_w)/2"
+        typing_sfx = TYPING_SFX
 
-    alpha = scene_alpha_expression(scene_index)
-    return (
-        f"drawtext=fontfile={escaped_font}:text='{text}':"
-        f"fontcolor={font_color}:fontsize={FONT_SIZE}:"
-        f"x={x_expr}:y={y_expr}:"
-        f"line_spacing=8:"
-        f"enable='between(t\\,{start}\\,{end})':"
-        f"alpha='{alpha}'"
-    )
+    bg_music = resolve_bg_music(data.bg_music)
 
-
-def build_filter_complex(font_path: str, hook_text: str, cta_text: str) -> str:
-    ken_burns = (
-        f"scale=8000:-1,"
-        f"zoompan=z='min(zoom+0.0015\\,1.35)':d={TOTAL_FRAMES}:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:fps={FRAMERATE}"
-    )
-    color_grade = "eq=contrast=1.08:saturation=1.14:brightness=0.02:gamma=1.02"
-    vignette = "vignette=angle=PI/4:mode=forward:a=0.38"
-    overlay_box = (
-        f"drawbox=x=0:y={OVERLAY_Y}:w=iw:h={OVERLAY_H}:"
-        f"color=black@0.58:t=fill"
-    )
-    film_grain = "noise=c0s=5:c0f=t"
-
-    hook_shadow = build_drawtext_layer(
-        font_path, hook_text, COLOR_HOOK, 0, 3, 1, shadow=True
-    )
-    hook_main = build_drawtext_layer(font_path, hook_text, COLOR_HOOK, 0, 3, 1)
-    cta_shadow = build_drawtext_layer(
-        font_path, cta_text, COLOR_CTA, 3, 6, 2, shadow=True
-    )
-    cta_main = build_drawtext_layer(font_path, cta_text, COLOR_CTA, 3, 6, 2)
-
-    return (
-        f"[0:v]{ken_burns},{color_grade},{vignette},"
-        f"{overlay_box},{film_grain},"
-        f"{hook_shadow},{hook_main},"
-        f"{cta_shadow},{cta_main}[v]"
-    )
-
-
-def download_image(image_url: str, destination: Path) -> None:
     try:
-        response = requests.get(image_url, timeout=30)
-        response.raise_for_status()
-        destination.write_bytes(response.content)
-    except requests.RequestException as exc:
+        response = requests.get(data.image_url, timeout=15)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to download image from URL.",
+            )
+        input_image.write_bytes(response.content)
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch image from URL: {exc}",
+            status_code=500,
+            detail=f"Image download error: {exc}",
         ) from exc
 
-
-def render_cinematic_video(
-    input_path: Path, output_path: Path, hook_text: str, cta_text: str
-) -> None:
     font_path = resolve_font_path()
-    wrapped_hook = wrap_text_block(hook_text)
-    wrapped_cta = wrap_text_block(cta_text)
-    filter_complex = build_filter_complex(font_path, wrapped_hook, wrapped_cta)
+    hook_text = wrap_text_block(data.text_scene_1)
+    cta_text = wrap_text_block(data.text_scene_2)
+    video_filters = build_video_filters(font_path, hook_text, cta_text)
+    audio_filters = build_audio_filters(include_typing_sfx=typing_sfx is not None)
+    filter_complex = f"{video_filters};{audio_filters}"
 
     command = [
         "ffmpeg",
@@ -164,27 +156,37 @@ def render_cinematic_video(
         "-loop",
         "1",
         "-i",
-        str(input_path),
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[v]",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "23",
-        "-t",
-        str(VIDEO_DURATION),
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        str(FRAMERATE),
-        "-movflags",
-        "+faststart",
-        str(output_path),
+        str(input_image),
+        "-i",
+        str(bg_music),
     ]
+    if typing_sfx is not None:
+        command.extend(["-i", str(typing_sfx)])
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-t",
+            str(VIDEO_DURATION),
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            str(FRAMERATE),
+            "-movflags",
+            "+faststart",
+            str(output_video),
+        ]
+    )
 
     try:
         subprocess.run(
@@ -193,59 +195,27 @@ def render_cinematic_video(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="FFmpeg is not installed or not available in PATH.",
-        ) from exc
     except subprocess.CalledProcessError as exc:
+        input_image.unlink(missing_ok=True)
+        output_video.unlink(missing_ok=True)
         error_msg = exc.stderr.decode(errors="replace").strip()
         raise HTTPException(
             status_code=500,
-            detail=f"FFmpeg rendering failed: {error_msg or exc.returncode}",
+            detail=f"FFmpeg Render Error: {error_msg}",
         ) from exc
+    finally:
+        input_image.unlink(missing_ok=True)
 
-
-@app.post("/render")
-def render_video(
-    payload: RenderRequest, background_tasks: BackgroundTasks
-) -> FileResponse:
-    output_handle = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    output_path = Path(output_handle.name)
-    output_handle.close()
-
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            work_dir = Path(temp_dir)
-            input_image = work_dir / "input.jpg"
-
-            download_image(str(payload.image_url), input_image)
-            render_cinematic_video(
-                input_image,
-                output_path,
-                payload.text_scene_1,
-                payload.text_scene_2,
-            )
-
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            output_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=500,
-                detail="Video file was not created successfully.",
-            )
-
-        background_tasks.add_task(os.unlink, output_path)
-        return FileResponse(
-            path=str(output_path),
-            media_type="video/mp4",
-            filename="goldmoon_video.mp4",
-        )
-    except HTTPException:
-        output_path.unlink(missing_ok=True)
-        raise
-    except Exception as exc:
-        output_path.unlink(missing_ok=True)
+    if not output_video.exists() or output_video.stat().st_size == 0:
+        output_video.unlink(missing_ok=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Video rendering failed: {exc}",
-        ) from exc
+            detail="Video file was not created successfully.",
+        )
+
+    background_tasks.add_task(output_video.unlink, missing_ok=True)
+    return FileResponse(
+        path=str(output_video),
+        media_type="video/mp4",
+        filename="goldmoon_viral_shorts.mp4",
+    )

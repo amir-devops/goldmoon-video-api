@@ -12,6 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
+COPY assets/ ./assets/
+COPY sounds/ ./sounds/
 
 EXPOSE 7860
 
