@@ -4,3 +4,5 @@ __pycache__/
 .env
 .venv/
 venv/
+sounds/*.mp3
+assets/*.mp3
