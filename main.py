@@ -4,6 +4,7 @@ import subprocess
 import textwrap
 import uuid
 from pathlib import Path
+from typing import List
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -24,16 +25,16 @@ MUSIC_SEARCH_DIRS = (ASSETS_DIR, SOUNDS_DIR, APP_DIR)
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FALLBACK_FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
-VIDEO_DURATION = 6
+IMG_DURATION = 3
 FRAMERATE = 30
-TOTAL_FRAMES = VIDEO_DURATION * FRAMERATE
+FRAMES_PER_IMG = IMG_DURATION * FRAMERATE
 
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
-DRAWBOX_HEIGHT = 400
+DRAWBOX_HEIGHT = 450
 
-FONT_SIZE = 54
-WRAP_CHARS = 28
+FONT_SIZE = 60
+WRAP_CHARS = 24
 
 MAX_VIDEO_TITLE_CHARS = 50
 MAX_SCENE_TEXT_CHARS = 40
@@ -46,7 +47,7 @@ BG_MUSIC_ALIASES = {
 
 
 class VideoRequest(BaseModel):
-    image_url: str
+    image_urls: List[str]
     video_title: str = ""
     text_scene_1: str
     text_scene_2: str
@@ -58,58 +59,38 @@ def resolve_font_path() -> str:
         return FONT_PATH
     if Path(FALLBACK_FONT).exists():
         return FALLBACK_FONT
-    raise HTTPException(
-        status_code=500,
-        detail="No suitable bold system font found for text rendering.",
-    )
+    raise HTTPException(status_code=500, detail="No suitable bold system font found.")
 
 
 def resolve_bg_music(music_filename: str) -> Path:
     alias_key = (music_filename or "").strip().lower()
     resolved_name = BG_MUSIC_ALIASES.get(alias_key, music_filename)
-
     raw_name = Path(resolved_name).name
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "", raw_name).strip()
-
     if safe_name:
         for folder in MUSIC_SEARCH_DIRS:
             candidate = folder / safe_name
             if candidate.exists():
                 return candidate
-
     if FALLBACK_MUSIC.exists():
         return FALLBACK_MUSIC
-
     for folder in (SOUNDS_DIR, ASSETS_DIR):
         mp3_files = sorted(folder.glob("*.mp3"))
         if mp3_files:
             return mp3_files[0]
-
-    raise HTTPException(
-        status_code=500,
-        detail="Background music not found and fallback missing too.",
-    )
+    raise HTTPException(status_code=500, detail="Background music not found.")
 
 
 def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
-    """Strip unsafe characters before FFmpeg drawtext or filename use."""
-
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     cleaned = cleaned.replace('"', "").replace("\\", "")
-    cleaned = re.sub(r"[^\w\s.,!?\-]", "", cleaned, flags=re.UNICODE)
-    cleaned = cleaned.strip()
+    cleaned = re.sub(r"[^\w\s.,!?\-]", "", cleaned, flags=re.UNICODE).strip()
     if max_chars is not None:
         return cleaned[:max_chars].strip()
     return cleaned
 
 
-def sanitize_scene_text(text: str) -> str:
-    return sanitize_plain_text(text, max_chars=MAX_SCENE_TEXT_CHARS)
-
-
 def escape_drawtext(text: str) -> str:
-    """Escape remaining FFmpeg drawtext metacharacters."""
-
     escaped = (text or "").strip()
     for source, target in {
         "\\": "\\\\",
@@ -124,92 +105,59 @@ def escape_drawtext(text: str) -> str:
 
 
 def prepare_scene_text(text: str, width: int = WRAP_CHARS) -> str:
-    plain_text = sanitize_scene_text(text)
+    plain_text = sanitize_plain_text(text, max_chars=MAX_SCENE_TEXT_CHARS)
     if not plain_text:
         return ""
-
     lines = textwrap.wrap(plain_text, width=width)
-    if not lines:
-        return ""
-
-    # FFmpeg drawtext supports \n inside text option.
     return "\\n".join(escape_drawtext(line) for line in lines)
 
 
-def build_video_filters(font_path: str, hook_text: str, cta_text: str) -> str:
-    escaped_font = font_path.replace(":", "\\:")
-    text_y = "(h-520)"
-    # Fixed pixel values avoid FFmpeg expression-evaluation errors in drawbox.
-    drawbox_filter = (
-        f"drawbox=x=0:y={VIDEO_HEIGHT - DRAWBOX_HEIGHT}:"
-        f"w={VIDEO_WIDTH}:h={DRAWBOX_HEIGHT}:color=black@0.6:t=fill"
-    )
-
-    # Critical rendering rules:
-    # - eq only: eq=contrast=1.1:saturation=1.2
-    # - vignette only: vignette=angle=0.5
-    # - keep filters separated by commas
-    # - drawtext: use w/h (not iw/ih) for FFmpeg compatibility
-    return (
-        f"[0:v]scale=8000:-1,"
-        f"zoompan=z='min(zoom+0.0015\\,1.3)':d={TOTAL_FRAMES}:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,"
-        f"eq=contrast=1.1:saturation=1.2,"
-        f"vignette=angle=0.5,"
-        f"{drawbox_filter},"
-        f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
-        f"x=(w-text_w)/2:y={text_y}:line_spacing=8:"
-        f"enable='between(t\\,0\\,3)':alpha='if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,2.5)\\,(3-t)*2\\,1))',"
-        f"drawtext=fontfile={escaped_font}:text='{cta_text}':fontcolor=0x00D7FF:fontsize={FONT_SIZE}:"
-        f"x=(w-text_w)/2:y={text_y}:line_spacing=8:"
-        f"enable='between(t\\,3\\,6)':alpha='if(lt(t\\,3.5)\\,(t-3)*2\\,if(gt(t\\,5.5)\\,(6-t)*2\\,1))'[v]"
-    )
-
-
-def build_audio_filters(include_typing_sfx: bool) -> str:
-    if include_typing_sfx:
-        # Inputs:
-        # [1:a] background music
-        # [2:a] typing sfx
-        return (
-            "[1:a]volume=0.20,afade=t=out:st=5.5:d=0.5[bg];"
-            "[2:a]asplit=2[sfx1_raw][sfx2_raw];"
-            "[sfx1_raw]atrim=0:2,volume=0.8[sfx1];"
-            "[sfx2_raw]atrim=0:2,adelay=3000|3000,volume=0.8[sfx2];"
-            "[bg][sfx1][sfx2]amix=inputs=3:duration=first[a]"
+@app.post("/render")
+def render_video(data: VideoRequest, background_tasks: BackgroundTasks) -> FileResponse:
+    if not data.image_urls or len(data.image_urls) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide at least 2 to 4 image URLs.",
+        )
+    if len(data.image_urls) > 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide at least 2 to 4 image URLs.",
         )
 
-    # Inputs: [1:a] background music only
-    return "[1:a]volume=0.20,afade=t=out:st=5.5:d=0.5[a]"
+    num_images = len(data.image_urls)
+    total_duration = num_images * IMG_DURATION
 
-
-@app.post("/render")
-def render_video(
-    data: VideoRequest, background_tasks: BackgroundTasks
-) -> FileResponse:
     unique_id = uuid.uuid4().hex
-    input_image = APP_DIR / f"input_{unique_id}.jpg"
     output_video = APP_DIR / f"output_{unique_id}.mp4"
-
-    typing_sfx = TYPING_SFX if TYPING_SFX.exists() else None
     bg_music = resolve_bg_music(data.bg_music)
+    typing_sfx = TYPING_SFX if TYPING_SFX.exists() else None
 
+    downloaded_images: list[Path] = []
     try:
-        try:
-            response = requests.get(data.image_url, timeout=15)
-            if response.status_code != 200:
+        for idx, url in enumerate(data.image_urls):
+            if not url.startswith(("http://", "https://")):
                 raise HTTPException(
                     status_code=400,
-                    detail="Failed to download image from URL.",
+                    detail=f"Invalid URL at index {idx}",
                 )
-            input_image.write_bytes(response.content)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Image download error: {exc}",
-            ) from exc
+            try:
+                res = requests.get(url, timeout=15)
+                if res.status_code != 200:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to download image [{idx}]: {url}",
+                    )
+                img_path = APP_DIR / f"input_{unique_id}_{idx}.jpg"
+                img_path.write_bytes(res.content)
+                downloaded_images.append(img_path)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to download image [{idx}]: {url}",
+                ) from exc
 
         font_path = resolve_font_path()
         hook_text = prepare_scene_text(data.text_scene_1)
@@ -221,22 +169,59 @@ def render_video(
                 detail="text_scene_1 and text_scene_2 must contain valid plain text.",
             )
 
-        video_filters = build_video_filters(font_path, hook_text, cta_text)
-        audio_filters = build_audio_filters(include_typing_sfx=typing_sfx is not None)
-        filter_complex = f"{video_filters};{audio_filters}"
+        escaped_font = font_path.replace(":", "\\:")
+        text_y = "(h-550)"
+        drawbox_filter = (
+            f"drawbox=x=0:y={VIDEO_HEIGHT - DRAWBOX_HEIGHT}:"
+            f"w={VIDEO_WIDTH}:h={DRAWBOX_HEIGHT}:color=black@0.5:t=fill"
+        )
 
-        command = [
-            "ffmpeg",
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            str(input_image),
-            "-i",
-            str(bg_music),
-        ]
-        if typing_sfx is not None:
+        command = ["ffmpeg", "-y"]
+        filter_inputs = ""
+
+        for idx, img in enumerate(downloaded_images):
+            command.extend(["-loop", "1", "-t", str(IMG_DURATION), "-i", str(img)])
+            filter_inputs += (
+                f"[{idx}:v]scale=2160:-1,"
+                f"zoompan=z='min(zoom+0.0012\\,1.2)':d={FRAMES_PER_IMG}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920[v{idx}];"
+            )
+
+        concat_src = "".join(f"[v{i}]" for i in range(num_images))
+        filter_concat = f"{concat_src}concat=n={num_images}:v=1:a=0[v_merged];"
+
+        mid_time = total_duration / 2
+        filter_text = (
+            f"[v_merged]eq=contrast=1.15:saturation=1.25,vignette=angle=0.4,{drawbox_filter},"
+            f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
+            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={text_y}:line_spacing=12:"
+            f"enable='between(t\\,0\\,{mid_time})':"
+            f"alpha='if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,{mid_time - 0.5})\\,({mid_time}-t)*2\\,1))',"
+            f"drawtext=fontfile={escaped_font}:text='{cta_text}':fontcolor=0x00D7FF:fontsize={FONT_SIZE}:"
+            f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={text_y}:line_spacing=12:"
+            f"enable='between(t\\,{mid_time}\\,{total_duration})':"
+            f"alpha='if(lt(t\\,{mid_time + 0.5})\\,(t-{mid_time})*2\\,if(gt(t\\,{total_duration - 0.5})\\,({total_duration}-t)*2\\,1))'[v]"
+        )
+
+        command.extend(["-i", str(bg_music)])
+        bg_input_idx = num_images
+
+        if typing_sfx:
             command.extend(["-i", str(typing_sfx)])
+            sfx_input_idx = num_images + 1
+            filter_audio = (
+                f"[{bg_input_idx}:a]volume=0.25,afade=t=out:st={total_duration - 0.5}:d=0.5[bg];"
+                f"[{sfx_input_idx}:a]asplit=2[sfx1_raw][sfx2_raw];"
+                f"[sfx1_raw]atrim=0:3,volume=0.8[sfx1];"
+                f"[sfx2_raw]atrim=0:3,adelay={int(mid_time * 1000)}|{int(mid_time * 1000)},volume=0.8[sfx2];"
+                f"[bg][sfx1][sfx2]amix=inputs=3:duration=first[a]"
+            )
+        else:
+            filter_audio = (
+                f"[{bg_input_idx}:a]volume=0.25,afade=t=out:st={total_duration - 0.5}:d=0.5[a]"
+            )
+
+        filter_complex = f"{filter_inputs}{filter_concat}{filter_text};{filter_audio}"
 
         command.extend(
             [
@@ -253,7 +238,7 @@ def render_video(
                 "-b:a",
                 "192k",
                 "-t",
-                str(VIDEO_DURATION),
+                str(total_duration),
                 "-pix_fmt",
                 "yuv420p",
                 "-r",
@@ -275,14 +260,11 @@ def render_video(
             error_msg = exc.stderr.decode(errors="replace").strip()
             raise HTTPException(
                 status_code=500,
-                detail=f"FFmpeg Render Error: {error_msg or exc.returncode}",
+                detail=f"FFmpeg Error: {error_msg or exc.returncode}",
             ) from exc
 
         if not output_video.exists() or output_video.stat().st_size == 0:
-            raise HTTPException(
-                status_code=500,
-                detail="Video file was not created successfully.",
-            )
+            raise HTTPException(status_code=500, detail="Video rendering failed.")
 
         safe_title = sanitize_plain_text(
             data.video_title, max_chars=MAX_VIDEO_TITLE_CHARS
@@ -290,7 +272,7 @@ def render_video(
         download_name = (
             f"{re.sub(r'[^A-Za-z0-9._-]+', '_', safe_title).strip('._')}.mp4"
             if safe_title
-            else "goldmoon_viral_shorts.mp4"
+            else "goldmoon_shorts.mp4"
         )
 
         background_tasks.add_task(output_video.unlink, missing_ok=True)
@@ -300,4 +282,5 @@ def render_video(
             filename=download_name,
         )
     finally:
-        input_image.unlink(missing_ok=True)
+        for img_path in downloaded_images:
+            img_path.unlink(missing_ok=True)
