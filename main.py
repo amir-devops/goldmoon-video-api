@@ -134,23 +134,25 @@ def prepare_scene_text(text: str, width: int = WRAP_CHARS) -> str:
 
 def build_video_filters(font_path: str, hook_text: str, cta_text: str) -> str:
     escaped_font = font_path.replace(":", "\\:")
+    text_y = "(h-520)"
 
     # Critical rendering rules:
     # - eq only: eq=contrast=1.1:saturation=1.2
     # - vignette only: vignette=angle=0.5
     # - keep filters separated by commas
+    # - drawtext/drawbox: use w/h (not iw/ih) for FFmpeg compatibility
     return (
         f"[0:v]scale=8000:-1,"
         f"zoompan=z='min(zoom+0.0015\\,1.3)':d={TOTAL_FRAMES}:"
         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,"
         f"eq=contrast=1.1:saturation=1.2,"
         f"vignette=angle=0.5,"
-        f"drawbox=y=ih-600:w=iw:h=400:color=black@0.6:t=fill,"
+        f"drawbox=y=(h-600):w=w:h=400:color=black@0.6:t=fill,"
         f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
-        f"x=(w-text_w)/2:y=ih-520:line_spacing=8:"
+        f"x=(w-text_w)/2:y={text_y}:line_spacing=8:"
         f"enable='between(t\\,0\\,3)':alpha='if(lt(t\\,0.5)\\,t*2\\,if(gt(t\\,2.5)\\,(3-t)*2\\,1))',"
         f"drawtext=fontfile={escaped_font}:text='{cta_text}':fontcolor=0x00D7FF:fontsize={FONT_SIZE}:"
-        f"x=(w-text_w)/2:y=ih-520:line_spacing=8:"
+        f"x=(w-text_w)/2:y={text_y}:line_spacing=8:"
         f"enable='between(t\\,3\\,6)':alpha='if(lt(t\\,3.5)\\,(t-3)*2\\,if(gt(t\\,5.5)\\,(6-t)*2\\,1))'[v]"
     )
 
