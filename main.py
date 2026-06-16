@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import textwrap
 import uuid
@@ -62,8 +63,16 @@ def resolve_bg_music(music_filename: str) -> Path:
     )
 
 
+def sanitize_scene_text(text: str) -> str:
+    """Strip characters that can break FFmpeg drawtext command strings."""
+    cleaned = re.sub(r"\s+", " ", text.strip())
+    cleaned = re.sub(r"[^\w\s.,!?\-]", "", cleaned, flags=re.UNICODE)
+    return cleaned.strip()
+
+
 def escape_drawtext(text: str) -> str:
-    escaped = text.strip()
+    """Escape remaining FFmpeg drawtext metacharacters after sanitization."""
+    escaped = text
     for source, target in {
         "\\": "\\\\",
         ":": "\\:",
@@ -76,8 +85,11 @@ def escape_drawtext(text: str) -> str:
     return escaped
 
 
-def wrap_text_block(text: str, width: int = WRAP_CHARS) -> str:
-    lines = textwrap.wrap(text.strip(), width=width)
+def prepare_scene_text(text: str, width: int = WRAP_CHARS) -> str:
+    plain_text = sanitize_scene_text(text)
+    if not plain_text:
+        return ""
+    lines = textwrap.wrap(plain_text, width=width)
     if not lines:
         return ""
     return "\\n".join(escape_drawtext(line) for line in lines)
@@ -89,7 +101,8 @@ def build_video_filters(font_path: str, hook_text: str, cta_text: str) -> str:
         f"[0:v]scale=8000:-1,"
         f"zoompan=z='min(zoom+0.0015\\,1.3)':d={TOTAL_FRAMES}:"
         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920,"
-        f"vignette=angle=0.5:contrast=1.1,"
+        f"eq=contrast=1.1:saturation=1.2,"
+        f"vignette=angle=0.5,"
         f"drawbox=y=ih-600:w=iw:h=400:color=black@0.6:t=fill,"
         f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
         f"x=(w-text_w)/2:y=ih-520:line_spacing=8:"
@@ -107,7 +120,7 @@ def build_audio_filters(include_typing_sfx: bool) -> str:
             "[2:a]asplit=2[sfx1_raw][sfx2_raw];"
             "[sfx1_raw]atrim=0:2,volume=0.8[sfx1];"
             "[sfx2_raw]atrim=0:2,adelay=3000|3000,volume=0.8[sfx2];"
-            "[bg][sfx1][sfx2]amix=inputs=3:duration=first:dropout_transition=0[a]"
+            "[bg][sfx1][sfx2]amix=inputs=3:duration=first[a]"
         )
     return "[1:a]volume=0.20,afade=t=out:st=5.5:d=0.5[a]"
 
@@ -144,8 +157,13 @@ def render_video(
         ) from exc
 
     font_path = resolve_font_path()
-    hook_text = wrap_text_block(data.text_scene_1)
-    cta_text = wrap_text_block(data.text_scene_2)
+    hook_text = prepare_scene_text(data.text_scene_1)
+    cta_text = prepare_scene_text(data.text_scene_2)
+    if not hook_text or not cta_text:
+        raise HTTPException(
+            status_code=400,
+            detail="text_scene_1 and text_scene_2 must contain valid plain text.",
+        )
     video_filters = build_video_filters(font_path, hook_text, cta_text)
     audio_filters = build_audio_filters(include_typing_sfx=typing_sfx is not None)
     filter_complex = f"{video_filters};{audio_filters}"
