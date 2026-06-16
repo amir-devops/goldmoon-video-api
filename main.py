@@ -31,9 +31,19 @@ TOTAL_FRAMES = VIDEO_DURATION * FRAMERATE
 FONT_SIZE = 54
 WRAP_CHARS = 28
 
+MAX_VIDEO_TITLE_CHARS = 50
+MAX_SCENE_TEXT_CHARS = 40
+
+BG_MUSIC_ALIASES = {
+    "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
+    "luxury_chill": "tunetank-vlog-beat-background-349853.mp3",
+    "cinematic_epic": "samuelfjohanns-cinematic-duduk-192901.mp3",
+}
+
 
 class VideoRequest(BaseModel):
     image_url: str
+    video_title: str = ""
     text_scene_1: str
     text_scene_2: str
     bg_music: str
@@ -51,7 +61,10 @@ def resolve_font_path() -> str:
 
 
 def resolve_bg_music(music_filename: str) -> Path:
-    raw_name = Path(music_filename).name
+    alias_key = (music_filename or "").strip().lower()
+    resolved_name = BG_MUSIC_ALIASES.get(alias_key, music_filename)
+
+    raw_name = Path(resolved_name).name
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "", raw_name).strip()
 
     if safe_name:
@@ -74,12 +87,20 @@ def resolve_bg_music(music_filename: str) -> Path:
     )
 
 
-def sanitize_scene_text(text: str) -> str:
-    """Remove characters that could break FFmpeg drawtext."""
+def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
+    """Strip unsafe characters before FFmpeg drawtext or filename use."""
 
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = cleaned.replace('"', "").replace("\\", "")
     cleaned = re.sub(r"[^\w\s.,!?\-]", "", cleaned, flags=re.UNICODE)
-    return cleaned.strip()
+    cleaned = cleaned.strip()
+    if max_chars is not None:
+        return cleaned[:max_chars].strip()
+    return cleaned
+
+
+def sanitize_scene_text(text: str) -> str:
+    return sanitize_plain_text(text, max_chars=MAX_SCENE_TEXT_CHARS)
 
 
 def escape_drawtext(text: str) -> str:
@@ -252,11 +273,20 @@ def render_video(
                 detail="Video file was not created successfully.",
             )
 
+        safe_title = sanitize_plain_text(
+            data.video_title, max_chars=MAX_VIDEO_TITLE_CHARS
+        )
+        download_name = (
+            f"{re.sub(r'[^A-Za-z0-9._-]+', '_', safe_title).strip('._')}.mp4"
+            if safe_title
+            else "goldmoon_viral_shorts.mp4"
+        )
+
         background_tasks.add_task(output_video.unlink, missing_ok=True)
         return FileResponse(
             path=str(output_video),
             media_type="video/mp4",
-            filename="goldmoon_viral_shorts.mp4",
+            filename=download_name,
         )
     finally:
         input_image.unlink(missing_ok=True)
