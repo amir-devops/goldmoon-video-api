@@ -30,6 +30,7 @@ API_KEY_SECRET = os.getenv("VIDEO_API_KEY", "GoldmoonSecret2026")
 CUSTOM_FONT = APP_DIR / "PlayfairDisplay-Regular.ttf"
 MONTSERRAT_FONT = ASSETS_DIR / "Montserrat-Bold.ttf"
 OSWALD_FONT = ASSETS_DIR / "Oswald-Bold.ttf"
+LOGO_PATH = Path(os.getenv("LOGO_PATH", str(ASSETS_DIR / "logo.png")))
 FONT_PATH = os.getenv("FONT_PATH", str(MONTSERRAT_FONT))
 FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FALLBACK_FONT_ALT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
@@ -51,8 +52,9 @@ TEXT_FADE_DURATION = 0.5
 
 OUTRO_DURATION = 3.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
-COMPANY_NAME = "GOLDMOON"
-WEBSITE_URL = "www.goldmoontours.com/en"
+WEBSITE_URL = "WWW.GOLDMOONEGYPT.COM"
+OUTRO_URL_FADE_DELAY = 0.4
+OUTRO_URL_FADE_DURATION = 0.5
 
 BG_MUSIC_ALIASES = {
     "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
@@ -272,15 +274,45 @@ def download_image(url: str, dest: Path) -> None:
     dest.write_bytes(img_bytes)
 
 
+def resolve_logo_path() -> Path | None:
+    if LOGO_PATH.exists():
+        return LOGO_PATH
+    return None
+
+
+def build_outro_with_logo_filter(
+    font_path: str,
+    bg_input_idx: int,
+    logo_input_idx: int,
+    website_url: str = WEBSITE_URL,
+    duration_frames: int = OUTRO_FRAMES,
+) -> str:
+    """Build outro with branded logo overlay and fading website URL."""
+    escaped_font = font_path.replace(":", "\\:")
+    clean_url = escape_drawtext(website_url.strip().upper())
+
+    return (
+        f"[{logo_input_idx}:v]scale=380:-1[logo_scaled];"
+        f"[{bg_input_idx}:v]loop={duration_frames}:1:0,format=yuv420p,"
+        f"scale=w=1620:h=2880:force_original_aspect_ratio=increase,"
+        f"crop=1620:2880,"
+        f"zoompan=z=1:d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}[bg];"
+        f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120[with_logo];"
+        f"[with_logo]drawtext=fontfile={escaped_font}:text='{clean_url}':"
+        f"fontcolor=white@0.8:fontsize=30:"
+        f"x=(w-text_w)/2:y=1120:"
+        f"alpha='if(lt(t\\,{OUTRO_URL_FADE_DELAY})\\,0\\,"
+        f"min((t-{OUTRO_URL_FADE_DELAY})/{OUTRO_URL_FADE_DURATION}\\,1))',"
+        f"fps={FRAMERATE}[v_outro]"
+    )
+
+
 def build_outro_filter(font_path: str, duration_frames: int = OUTRO_FRAMES) -> str:
     """
-    Premium 3-second outro (applied on lavfi color input at r=30):
-    1. GOLDMOON company name in gold, centered
-    2. Website URL in white below the name
-    3. fps filter to match scene timebase
+    Fallback outro on black background when logo file is unavailable.
     """
     escaped_font = font_path.replace(":", "\\:")
-    company_name = escape_drawtext(COMPANY_NAME)
+    company_name = escape_drawtext("GOLDMOON")
     website_url = escape_drawtext(WEBSITE_URL)
 
     return (
@@ -302,6 +334,8 @@ def build_filter_complex(
     text_scene_1: str,
     text_scene_2: str,
     music_path: Path | None,
+    logo_path: Path | None,
+    outro_bg_path: Path | None,
 ) -> tuple[str, list[str], list[str], float]:
     scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
     if not any(scene_texts):
@@ -311,23 +345,43 @@ def build_filter_complex(
         num_images, font_path, scene_texts
     )
 
-    outro_idx = num_images
-    music_idx = num_images + 1
+    outro_bg_idx = num_images
+    logo_idx = num_images + 1 if logo_path else None
+    music_idx = num_images + (2 if logo_path else 1)
     outro_offset = images_duration - XFADE_DURATION
     total_duration = images_duration + OUTRO_DURATION - XFADE_DURATION
 
-    outro_filters = (
-        f"[{outro_idx}:v]{build_outro_filter(font_path)}[v_outro];"
-        f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
-        f"offset={outro_offset}[v_final];"
-    )
-
-    lavfi_input = [
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={OUTRO_DURATION}:r={FRAMERATE}",
-    ]
+    if logo_path and outro_bg_path:
+        outro_filters = (
+            build_outro_with_logo_filter(
+                font_path, outro_bg_idx, logo_idx, WEBSITE_URL, OUTRO_FRAMES
+            )
+            + ";"
+            + f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
+            f"offset={outro_offset}[v_final];"
+        )
+        outro_input = [
+            "-loop",
+            "1",
+            "-t",
+            str(OUTRO_DURATION),
+            "-i",
+            str(outro_bg_path),
+            "-i",
+            str(logo_path),
+        ]
+    else:
+        outro_filters = (
+            f"[{outro_bg_idx}:v]{build_outro_filter(font_path)}[v_outro];"
+            f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
+            f"offset={outro_offset}[v_final];"
+        )
+        outro_input = [
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={OUTRO_DURATION}:r={FRAMERATE}",
+        ]
 
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
@@ -341,7 +395,7 @@ def build_filter_complex(
 
     return (
         image_filters + outro_filters + audio_filters,
-        lavfi_input,
+        outro_input,
         audio_input,
         total_duration,
     )
@@ -363,6 +417,7 @@ def health_check() -> dict:
                 FALLBACK_FONT_ALT,
             )
         ),
+        "logo_installed": LOGO_PATH.exists(),
     }
 
 
@@ -407,13 +462,17 @@ async def render_video(
                 )
 
             music_path = resolve_bg_music(payload.bg_music)
+            logo_path = resolve_logo_path()
             num_images = len(downloaded_images)
+            outro_bg_path = downloaded_images[-1] if downloaded_images else None
             filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
                 num_images,
                 font_path,
                 payload.text_scene_1,
                 payload.text_scene_2,
                 music_path,
+                logo_path,
+                outro_bg_path,
             )
 
             command = ["ffmpeg", "-y"]
