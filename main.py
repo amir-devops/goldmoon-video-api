@@ -282,21 +282,20 @@ def resolve_logo_path() -> Path | None:
 
 def build_outro_with_logo_filter(
     font_path: str,
-    bg_input_idx: int,
     logo_input_idx: int,
     website_url: str = WEBSITE_URL,
     duration_frames: int = OUTRO_FRAMES,
 ) -> str:
-    """Build outro with branded logo overlay and fading website URL."""
+    """
+    Build outro on a pure black canvas so the logo blends cleanly without a harsh box.
+  """
     escaped_font = font_path.replace(":", "\\:")
     clean_url = escape_drawtext(website_url.strip().upper())
+    outro_duration = duration_frames / FRAMERATE
 
     return (
+        f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={FRAMERATE}:d={outro_duration}[bg];"
         f"[{logo_input_idx}:v]scale=380:-1[logo_scaled];"
-        f"[{bg_input_idx}:v]loop={duration_frames}:1:0,format=yuv420p,"
-        f"scale=w=1620:h=2880:force_original_aspect_ratio=increase,"
-        f"crop=1620:2880,"
-        f"zoompan=z=1:d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}[bg];"
         f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120[with_logo];"
         f"[with_logo]drawtext=fontfile={escaped_font}:text='{clean_url}':"
         f"fontcolor=white@0.8:fontsize=30:"
@@ -335,7 +334,6 @@ def build_filter_complex(
     text_scene_2: str,
     music_path: Path | None,
     logo_path: Path | None,
-    outro_bg_path: Path | None,
 ) -> tuple[str, list[str], list[str], float]:
     scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
     if not any(scene_texts):
@@ -346,30 +344,20 @@ def build_filter_complex(
     )
 
     outro_bg_idx = num_images
-    logo_idx = num_images + 1 if logo_path else None
-    music_idx = num_images + (2 if logo_path else 1)
+    music_idx = num_images + 1
     outro_offset = images_duration - XFADE_DURATION
     total_duration = images_duration + OUTRO_DURATION - XFADE_DURATION
 
-    if logo_path and outro_bg_path:
+    if logo_path:
         outro_filters = (
             build_outro_with_logo_filter(
-                font_path, outro_bg_idx, logo_idx, WEBSITE_URL, OUTRO_FRAMES
+                font_path, num_images, WEBSITE_URL, OUTRO_FRAMES
             )
             + ";"
             + f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
             f"offset={outro_offset}[v_final];"
         )
-        outro_input = [
-            "-loop",
-            "1",
-            "-t",
-            str(OUTRO_DURATION),
-            "-i",
-            str(outro_bg_path),
-            "-i",
-            str(logo_path),
-        ]
+        outro_input = ["-i", str(logo_path)]
     else:
         outro_filters = (
             f"[{outro_bg_idx}:v]{build_outro_filter(font_path)}[v_outro];"
@@ -464,7 +452,6 @@ async def render_video(
             music_path = resolve_bg_music(payload.bg_music)
             logo_path = resolve_logo_path()
             num_images = len(downloaded_images)
-            outro_bg_path = downloaded_images[-1] if downloaded_images else None
             filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
                 num_images,
                 font_path,
@@ -472,7 +459,6 @@ async def render_video(
                 payload.text_scene_2,
                 music_path,
                 logo_path,
-                outro_bg_path,
             )
 
             command = ["ffmpeg", "-y"]
