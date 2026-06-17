@@ -6,3 +6,4 @@ __pycache__/
 venv/
 sounds/*.mp3
 assets/*.mp3
+assets/logo.png
