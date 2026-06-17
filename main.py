@@ -46,6 +46,8 @@ WRAP_CHARS = 28
 SCENE_FONT_SIZE = 46
 SCENE_TEXT_START_Y = 1100
 SCENE_LINE_SPACING = 85
+TEXT_FADE_DELAY = 0.3
+TEXT_FADE_DURATION = 0.5
 
 OUTRO_DURATION = 3.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
@@ -167,7 +169,8 @@ def build_scene_filter(
     1. Loop + scale + center crop + Ken Burns (no stretch)
     2. Shorts safe-zone text placement (y=1100+)
     3. UPPERCASE luxury styling + cinematic transparent box
-    4. Locked 30 FPS timebase
+    4. Smooth text + box fade-in via alpha
+    5. Locked 30 FPS timebase
     """
     base_filter = (
         f"loop={duration_frames}:1:0,"
@@ -190,7 +193,9 @@ def build_scene_filter(
             f"drawtext=fontfile={escaped_font}:text='{premium_line}':"
             f"fontcolor=white:fontsize={SCENE_FONT_SIZE}:"
             f"box=1:boxcolor=black@0.4:boxborderw=20:"
-            f"x=(w-text_w)/2:y={y_position}"
+            f"x=(w-text_w)/2:y={y_position}:"
+            f"alpha='if(lt(t\\,{TEXT_FADE_DELAY})\\,0\\,"
+            f"min((t-{TEXT_FADE_DELAY})/{TEXT_FADE_DURATION}\\,1))'"
         )
 
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
