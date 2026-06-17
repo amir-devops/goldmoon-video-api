@@ -43,6 +43,11 @@ FFMPEG_TIMEOUT = 120
 WRAP_CHARS = 28
 SCENE_FONT_SIZE = 52
 
+OUTRO_DURATION = 3.0
+OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
+COMPANY_NAME = "GOLDMOON"
+WEBSITE_URL = "www.goldmoontours.com/en"
+
 BG_MUSIC_ALIASES = {
     "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
     "luxury_chill": "tunetank-vlog-beat-background-349853.mp3",
@@ -198,11 +203,11 @@ def build_scene_pipeline(
         current_offset += IMG_DURATION - XFADE_DURATION
 
     filter_parts.append(
-        "[v_images_merged]eq=contrast=1.1:saturation=1.15[v_final];"
+        "[v_images_merged]eq=contrast=1.1:saturation=1.15[v_graded];"
     )
 
-    total_duration = (IMG_DURATION * num_images) - (XFADE_DURATION * (num_images - 1))
-    return "".join(filter_parts), total_duration
+    images_duration = (IMG_DURATION * num_images) - (XFADE_DURATION * (num_images - 1))
+    return "".join(filter_parts), images_duration
 
 
 def assign_scene_texts(
@@ -214,6 +219,9 @@ def assign_scene_texts(
     lines_2 = split_scene_lines(text_scene_2)
     split_at = num_images // 2
     return [lines_1 if index < split_at else lines_2 for index in range(num_images)]
+
+
+def download_image(url: str, dest: Path) -> None:
     response = requests.get(url, timeout=10, stream=True)
     if not response.ok:
         raise HTTPException(status_code=400, detail=f"Failed to fetch image: {url}")
@@ -242,33 +250,78 @@ def assign_scene_texts(
     dest.write_bytes(img_bytes)
 
 
+def build_outro_filter(font_path: str, duration_frames: int = OUTRO_FRAMES) -> str:
+    """
+    Premium 3-second outro:
+    1. Black cinematic background (1080x1920 via lavfi color input)
+    2. GOLDMOON company name in gold, centered
+    3. Website URL in white below the name
+    """
+    escaped_font = font_path.replace(":", "\\:")
+    company_name = escape_drawtext(COMPANY_NAME)
+    website_url = escape_drawtext(WEBSITE_URL)
+
+    return (
+        f"drawtext=fontfile={escaped_font}:text='{company_name}':"
+        f"fontcolor=gold:fontsize=72:box=0:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2-60:"
+        f"borderw=2:bordercolor=black,"
+        f"drawtext=fontfile={escaped_font}:text='{website_url}':"
+        f"fontcolor=white:fontsize=38:box=0:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2+40:"
+        f"borderw=1:bordercolor=black,setsar=1"
+    )
+
+
 def build_filter_complex(
     num_images: int,
     font_path: str,
     text_scene_1: str,
     text_scene_2: str,
     music_path: Path | None,
-) -> tuple[str, list[str], float]:
+) -> tuple[str, list[str], list[str], float]:
     scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
     if not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
 
-    image_filters, total_duration = build_scene_pipeline(
+    image_filters, images_duration = build_scene_pipeline(
         num_images, font_path, scene_texts
     )
 
-    audio_input: list[str]
+    outro_idx = num_images
+    music_idx = num_images + 1
+    outro_offset = images_duration - XFADE_DURATION
+    total_duration = images_duration + OUTRO_DURATION - XFADE_DURATION
+
+    outro_filters = (
+        f"[{outro_idx}:v]{build_outro_filter(font_path)}[v_outro];"
+        f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
+        f"offset={outro_offset}[v_final];"
+    )
+
+    lavfi_input = [
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={OUTRO_DURATION}:r={FRAMERATE}",
+    ]
+
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
         audio_filters = (
-            f"[{num_images}:a]aloop=loop=-1:size=2e+09,atrim=0:{total_duration},"
+            f"[{music_idx}:a]aloop=loop=-1:size=2e+09,atrim=0:{total_duration},"
             f"volume=0.25,afade=t=out:st={total_duration - 0.5}:d=0.5[a_final]"
         )
     else:
         audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-        audio_filters = f"[{num_images}:a]atrim=0:{total_duration}[a_final]"
+        audio_filters = f"[{music_idx}:a]atrim=0:{total_duration}[a_final]"
 
-    return image_filters + audio_filters, audio_input, total_duration
+    return (
+        image_filters + outro_filters + audio_filters,
+        lavfi_input,
+        audio_input,
+        total_duration,
+    )
 
 
 @app.get("/health")
@@ -325,7 +378,7 @@ async def render_video(
 
             music_path = resolve_bg_music(payload.bg_music)
             num_images = len(downloaded_images)
-            filter_complex, audio_input, total_duration = build_filter_complex(
+            filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
                 num_images,
                 font_path,
                 payload.text_scene_1,
@@ -336,6 +389,7 @@ async def render_video(
             command = ["ffmpeg", "-y"]
             for img in downloaded_images:
                 command.extend(["-loop", "1", "-t", str(IMG_DURATION), "-i", str(img)])
+            command.extend(outro_input)
             command.extend(audio_input)
             command.extend(
                 [
