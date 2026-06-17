@@ -152,19 +152,20 @@ def build_scene_filter(
     """
     Per-scene pipeline:
     1. Loop single image frame for zoompan stability
-    2. Full-screen crop + Ken Burns zoompan
+    2. Full-screen crop + Ken Burns zoompan at fixed FPS
     3. One drawtext filter per line (avoids \\n rendering bugs)
+    4. fps filter to lock output timebase
     """
     base_filter = (
         f"loop={duration_frames}:1:0,"
         "format=yuv420p,"
         "scale=1620:2880:force_original_aspect_ratio=increase,"
         f"zoompan=z='min(zoom+0.001\\,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}"
+        f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}"
     )
 
     if not text_lines:
-        return base_filter
+        return f"{base_filter},fps={FRAMERATE}"
 
     escaped_font = font_path.replace(":", "\\:")
     text_filters: list[str] = []
@@ -178,7 +179,7 @@ def build_scene_filter(
             f"borderw=3:bordercolor=black"
         )
 
-    return base_filter + "," + ",".join(text_filters)
+    return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
 
 
 def build_scene_pipeline(
@@ -254,10 +255,10 @@ def download_image(url: str, dest: Path) -> None:
 
 def build_outro_filter(font_path: str, duration_frames: int = OUTRO_FRAMES) -> str:
     """
-    Premium 3-second outro:
-    1. Black cinematic background (1080x1920 via lavfi color input)
-    2. GOLDMOON company name in gold, centered
-    3. Website URL in white below the name
+    Premium 3-second outro (applied on lavfi color input at r=30):
+    1. GOLDMOON company name in gold, centered
+    2. Website URL in white below the name
+    3. fps filter to match scene timebase
     """
     escaped_font = font_path.replace(":", "\\:")
     company_name = escape_drawtext(COMPANY_NAME)
@@ -271,7 +272,8 @@ def build_outro_filter(font_path: str, duration_frames: int = OUTRO_FRAMES) -> s
         f"drawtext=fontfile={escaped_font}:text='{website_url}':"
         f"fontcolor=white:fontsize=38:box=0:"
         f"x=(w-text_w)/2:y=(h-text_h)/2+40:"
-        f"borderw=1:bordercolor=black,setsar=1"
+        f"borderw=1:bordercolor=black,"
+        f"setsar=1,fps={FRAMERATE}"
     )
 
 
