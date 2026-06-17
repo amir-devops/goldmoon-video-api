@@ -151,11 +151,13 @@ def build_scene_filter(
 ) -> str:
     """
     Per-scene pipeline:
-    1. Full-screen crop (no letterbox bars)
-    2. Ken Burns zoompan
+    1. Loop single image frame for zoompan stability
+    2. Full-screen crop + Ken Burns zoompan
     3. One drawtext filter per line (avoids \\n rendering bugs)
     """
     base_filter = (
+        f"loop={duration_frames}:1:0,"
+        "format=yuv420p,"
         "scale=1620:2880:force_original_aspect_ratio=increase,"
         f"zoompan=z='min(zoom+0.001\\,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
         f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}"
@@ -388,7 +390,7 @@ async def render_video(
 
             command = ["ffmpeg", "-y"]
             for img in downloaded_images:
-                command.extend(["-loop", "1", "-t", str(IMG_DURATION), "-i", str(img)])
+                command.extend(["-i", str(img)])
             command.extend(outro_input)
             command.extend(audio_input)
             command.extend(
