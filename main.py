@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
 import uuid
 from pathlib import Path
@@ -63,6 +64,10 @@ BG_MUSIC_ALIASES = {
 }
 
 render_semaphore = asyncio.Semaphore(1)
+
+
+class RenderError(Exception):
+    """Raised when video rendering fails outside HTTP request context."""
 
 
 class VideoRequest(BaseModel):
@@ -137,6 +142,20 @@ def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
     if max_chars is not None:
         return cleaned[:max_chars].strip()
     return cleaned
+
+
+def require_english_text(text: str, field_name: str, max_chars: int = 60) -> str:
+    """Ensure scene text is English-only for Shorts branding consistency."""
+    cleaned = sanitize_plain_text(text, max_chars=max_chars)
+    if not cleaned or not re.fullmatch(r"[A-Za-z0-9\s.,!?\-]+", cleaned):
+        raise RenderError(f"{field_name} must contain English plain text only.")
+    return cleaned
+
+
+def safe_output_filename(video_title: str) -> str:
+    safe_title = sanitize_plain_text(video_title, max_chars=50)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_title).strip("._")
+    return f"{slug or 'goldmoon_promo'}.mp4"
 
 
 def escape_drawtext(text: str) -> str:
@@ -288,7 +307,7 @@ def build_outro_with_logo_filter(
 ) -> str:
     """
     Build outro on a pure black canvas so the logo blends cleanly without a harsh box.
-  """
+    """
     escaped_font = font_path.replace(":", "\\:")
     clean_url = escape_drawtext(website_url.strip().upper())
     outro_duration = duration_frames / FRAMERATE
@@ -389,6 +408,175 @@ def build_filter_complex(
     )
 
 
+def validate_local_image(path: Path) -> None:
+    if not path.exists():
+        raise RenderError(f"Image not found: {path}")
+    if path.stat().st_size > MAX_IMAGE_BYTES:
+        raise RenderError(f"Image exceeds 10MB limit: {path}")
+    try:
+        with Image.open(path) as img:
+            img.verify()
+    except Exception as exc:
+        raise RenderError(f"Invalid image file: {path}") from exc
+
+
+def execute_render(
+    image_paths: list[Path],
+    text_scene_1: str,
+    text_scene_2: str,
+    video_title: str,
+    bg_music: str = "luxury_chill",
+    output_path: Path | None = None,
+) -> Path:
+    if len(image_paths) < 2 or len(image_paths) > 4:
+        raise RenderError("Please provide 2 to 4 images.")
+
+    scene_1 = require_english_text(text_scene_1, "text_scene_1")
+    scene_2 = require_english_text(text_scene_2, "text_scene_2")
+    if not split_scene_lines(scene_1) or not split_scene_lines(scene_2):
+        raise RenderError("text_scene_1 and text_scene_2 must contain valid plain text.")
+
+    for image_path in image_paths:
+        validate_local_image(image_path)
+
+    try:
+        font_path = resolve_font_path()
+    except HTTPException as exc:
+        raise RenderError(str(exc.detail)) from exc
+
+    music_path = resolve_bg_music(bg_music)
+    logo_path = resolve_logo_path()
+    num_images = len(image_paths)
+
+    filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
+        num_images,
+        font_path,
+        scene_1,
+        scene_2,
+        music_path,
+        logo_path,
+    )
+
+    if output_path is None:
+        safe_title = sanitize_plain_text(video_title, max_chars=50)
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_title).strip("._") or "goldmoon_promo"
+        output_path = APP_DIR / f"output_{slug}.mp4"
+    else:
+        output_path = Path(output_path)
+
+    command = ["ffmpeg", "-y"]
+    for img in image_paths:
+        command.extend(["-i", str(img)])
+    command.extend(outro_input)
+    command.extend(audio_input)
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v_final]",
+            "-map",
+            "[a_final]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "faster",
+            "-crf",
+            "22",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            str(FRAMERATE),
+            "-movflags",
+            "+faststart",
+            "-t",
+            str(total_duration),
+            str(output_path),
+        ]
+    )
+
+    try:
+        process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=FFMPEG_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RenderError("Rendering timeout.") from exc
+
+    if process.returncode != 0:
+        error_msg = process.stderr.decode(errors="replace").strip()
+        raise RenderError(f"FFmpeg Error: {error_msg or process.returncode}")
+
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RenderError("Video rendering failed.")
+
+    return output_path
+
+
+def run_n8n_cli() -> None:
+    """
+    CLI entry for n8n Execute Command:
+    python main.py <img1> <img2> [img3] [img4] <text1> <text2> <video_title> [bg_music]
+    """
+    if len(sys.argv) < 6:
+        print("Error: Missing arguments from n8n!")
+        print(
+            "Expected: python main.py <img1> <img2> <text1> <text2> <video_title> [bg_music]"
+        )
+        print(
+            "Or: python main.py <img1> <img2> <img3> <text1> <text2> <video_title> [bg_music]"
+        )
+        sys.exit(1)
+
+    optional_music = sys.argv[-1]
+    known_music = {"desert_ambient", "luxury_chill", "cinematic_epic"}
+    if optional_music in known_music:
+        bg_music = optional_music
+        argv = sys.argv[1:-1]
+    else:
+        bg_music = "luxury_chill"
+        argv = sys.argv[1:]
+
+    if len(argv) < 5:
+        print("Error: Missing text or video title arguments.")
+        sys.exit(1)
+
+    video_title = argv[-1]
+    text_scene_2 = argv[-2]
+    text_scene_1 = argv[-3]
+    image_args = argv[:-3]
+
+    if len(image_args) < 2 or len(image_args) > 4:
+        print("Error: Provide 2 to 4 image paths.")
+        sys.exit(1)
+
+    image_paths = [Path(arg).resolve() for arg in image_args]
+    output_name = safe_output_filename(video_title)
+    output_path = Path.cwd() / f"output_{Path(output_name).stem}.mp4"
+
+    try:
+        result = execute_render(
+            image_paths=image_paths,
+            text_scene_1=text_scene_1,
+            text_scene_2=text_scene_2,
+            video_title=video_title,
+            bg_music=bg_music,
+            output_path=output_path,
+        )
+    except RenderError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    print(f"Success: {result}")
+
+
 @app.get("/health")
 def health_check() -> dict:
     return {
@@ -440,91 +628,28 @@ async def render_video(
                     ) from exc
                 downloaded_images.append(img_path)
 
-            font_path = resolve_font_path()
-            if not split_scene_lines(payload.text_scene_1) or not split_scene_lines(
-                payload.text_scene_2
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="text_scene_1 and text_scene_2 must contain valid plain text.",
-                )
-
-            music_path = resolve_bg_music(payload.bg_music)
-            logo_path = resolve_logo_path()
-            num_images = len(downloaded_images)
-            filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
-                num_images,
-                font_path,
-                payload.text_scene_1,
-                payload.text_scene_2,
-                music_path,
-                logo_path,
-            )
-
-            command = ["ffmpeg", "-y"]
-            for img in downloaded_images:
-                command.extend(["-i", str(img)])
-            command.extend(outro_input)
-            command.extend(audio_input)
-            command.extend(
-                [
-                    "-filter_complex",
-                    filter_complex,
-                    "-map",
-                    "[v_final]",
-                    "-map",
-                    "[a_final]",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "faster",
-                    "-crf",
-                    "22",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-r",
-                    str(FRAMERATE),
-                    "-movflags",
-                    "+faststart",
-                    "-t",
-                    str(total_duration),
-                    str(output_video),
-                ]
-            )
+            try:
+                require_english_text(payload.text_scene_1, "text_scene_1")
+                require_english_text(payload.text_scene_2, "text_scene_2")
+            except RenderError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             try:
-                process = await asyncio.to_thread(
-                    subprocess.run,
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=FFMPEG_TIMEOUT,
-                    check=False,
+                await asyncio.to_thread(
+                    execute_render,
+                    downloaded_images,
+                    payload.text_scene_1,
+                    payload.text_scene_2,
+                    payload.video_title,
+                    payload.bg_music,
+                    output_video,
                 )
-            except subprocess.TimeoutExpired as exc:
-                raise HTTPException(status_code=504, detail="Rendering timeout.") from exc
+            except RenderError as exc:
+                if "timeout" in str(exc).lower():
+                    raise HTTPException(status_code=504, detail=str(exc)) from exc
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-            if process.returncode != 0:
-                error_msg = process.stderr.decode(errors="replace").strip()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"FFmpeg Error: {error_msg or process.returncode}",
-                )
-
-            if not output_video.exists() or output_video.stat().st_size == 0:
-                raise HTTPException(status_code=500, detail="Video rendering failed.")
-
-            safe_title = sanitize_plain_text(payload.video_title, max_chars=50)
-            download_name = (
-                f"{re.sub(r'[^A-Za-z0-9._-]+', '_', safe_title).strip('._')}.mp4"
-                if safe_title
-                else "goldmoon_promo.mp4"
-            )
-
+            download_name = safe_output_filename(payload.video_title)
             background_tasks.add_task(output_video.unlink, missing_ok=True)
             return FileResponse(
                 path=str(output_video),
@@ -534,3 +659,7 @@ async def render_video(
         finally:
             for img_path in downloaded_images:
                 img_path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    run_n8n_cli()
