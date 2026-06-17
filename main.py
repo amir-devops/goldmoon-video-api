@@ -27,19 +27,21 @@ FALLBACK_MUSIC = ASSETS_DIR / "music_epic.mp3"
 MUSIC_SEARCH_DIRS = (ASSETS_DIR, SOUNDS_DIR, APP_DIR)
 
 API_KEY_SECRET = os.getenv("VIDEO_API_KEY", "GoldmoonSecret2026")
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FALLBACK_FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+CUSTOM_FONT = APP_DIR / "PlayfairDisplay-Regular.ttf"
+FONT_PATH = os.getenv("FONT_PATH", str(CUSTOM_FONT))
+FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FALLBACK_FONT_ALT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 IMG_DURATION = 4.0
 XFADE_DURATION = 0.5
 FRAMERATE = 30
+DURATION_FRAMES = int(IMG_DURATION * FRAMERATE)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 FFMPEG_TIMEOUT = 120
 WRAP_CHARS = 28
-FONT_SIZE = 46
-TEXT_Y = "(h-420)"
+SCENE_FONT_SIZE = 52
 
 BG_MUSIC_ALIASES = {
     "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
@@ -65,10 +67,9 @@ def verify_api_key(x_api_key: str | None = Header(default=None)) -> str:
 
 
 def resolve_font_path() -> str:
-    if Path(FONT_PATH).exists():
-        return FONT_PATH
-    if Path(FALLBACK_FONT).exists():
-        return FALLBACK_FONT
+    for candidate in (FONT_PATH, FALLBACK_FONT, FALLBACK_FONT_ALT):
+        if Path(candidate).exists():
+            return str(candidate)
     raise HTTPException(status_code=500, detail="No suitable bold system font found.")
 
 
@@ -130,15 +131,89 @@ def escape_drawtext(text: str) -> str:
     return escaped
 
 
-def prepare_scene_text(text: str, width: int = WRAP_CHARS) -> str:
+def split_scene_lines(text: str, max_lines: int = 2) -> list[str]:
+    """Split sanitized text into independent drawtext lines (no literal \\n)."""
     plain_text = sanitize_plain_text(text, max_chars=60)
     if not plain_text:
-        return ""
-    lines = textwrap.wrap(plain_text, width=width)
-    return "\\n".join(escape_drawtext(line) for line in lines)
+        return []
+    return textwrap.wrap(plain_text, width=WRAP_CHARS)[:max_lines]
 
 
-def download_image(url: str, dest: Path) -> None:
+def build_scene_filter(
+    font_path: str,
+    text_lines: list[str],
+    duration_frames: int = DURATION_FRAMES,
+) -> str:
+    """
+    Per-scene pipeline:
+    1. Full-screen crop (no letterbox bars)
+    2. Ken Burns zoompan
+    3. One drawtext filter per line (avoids \\n rendering bugs)
+    """
+    base_filter = (
+        "scale=1620:2880:force_original_aspect_ratio=increase,"
+        f"zoompan=z='min(zoom+0.001\\,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}"
+    )
+
+    if not text_lines:
+        return base_filter
+
+    escaped_font = font_path.replace(":", "\\:")
+    text_filters: list[str] = []
+    for index, line in enumerate(text_lines):
+        clean_line = escape_drawtext(line)
+        y_position = f"(h-text_h)/2+320+({index}*65)"
+        text_filters.append(
+            f"drawtext=fontfile={escaped_font}:text='{clean_line}':"
+            f"fontcolor=white:fontsize={SCENE_FONT_SIZE}:box=0:"
+            f"x=(w-text_w)/2:y={y_position}:"
+            f"borderw=3:bordercolor=black"
+        )
+
+    return base_filter + "," + ",".join(text_filters)
+
+
+def build_scene_pipeline(
+    num_images: int,
+    font_path: str,
+    scene_texts: list[list[str]],
+) -> tuple[str, float]:
+    """Build Ken Burns scene filters + xfade chain. Returns (filter_str, total_duration)."""
+    filter_parts: list[str] = []
+
+    for i in range(num_images):
+        scene_filter = build_scene_filter(font_path, scene_texts[i])
+        filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
+
+    last_output = "[v_scene_0]"
+    current_offset = IMG_DURATION - XFADE_DURATION
+    for i in range(1, num_images):
+        next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
+        filter_parts.append(
+            f"{last_output}[v_scene_{i}]xfade=transition=fade:duration={XFADE_DURATION}:"
+            f"offset={current_offset}{next_label};"
+        )
+        last_output = next_label
+        current_offset += IMG_DURATION - XFADE_DURATION
+
+    filter_parts.append(
+        "[v_images_merged]eq=contrast=1.1:saturation=1.15[v_final];"
+    )
+
+    total_duration = (IMG_DURATION * num_images) - (XFADE_DURATION * (num_images - 1))
+    return "".join(filter_parts), total_duration
+
+
+def assign_scene_texts(
+    num_images: int,
+    text_scene_1: str,
+    text_scene_2: str,
+) -> list[list[str]]:
+    lines_1 = split_scene_lines(text_scene_1)
+    lines_2 = split_scene_lines(text_scene_2)
+    split_at = num_images // 2
+    return [lines_1 if index < split_at else lines_2 for index in range(num_images)]
     response = requests.get(url, timeout=10, stream=True)
     if not response.ok:
         raise HTTPException(status_code=400, detail=f"Failed to fetch image: {url}")
@@ -167,52 +242,19 @@ def download_image(url: str, dest: Path) -> None:
     dest.write_bytes(img_bytes)
 
 
-def build_xfade_chain(num_images: int) -> tuple[str, float]:
-    """Build letterbox + xfade filter chain. Returns (filter_str, total_duration)."""
-    filter_parts: list[str] = []
-    for i in range(num_images):
-        filter_parts.append(
-            f"[{i}:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={VIDEO_WIDTH}:{VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=0x0F0F0F,"
-            f"setsar=1[v_scaled_{i}];"
-        )
-
-    last_output = "[v_scaled_0]"
-    current_offset = IMG_DURATION - XFADE_DURATION
-    for i in range(1, num_images):
-        next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
-        filter_parts.append(
-            f"{last_output}[v_scaled_{i}]xfade=transition=fade:duration={XFADE_DURATION}:"
-            f"offset={current_offset}{next_label};"
-        )
-        last_output = next_label
-        current_offset += IMG_DURATION - XFADE_DURATION
-
-    total_duration = (IMG_DURATION * num_images) - (XFADE_DURATION * (num_images - 1))
-    return "".join(filter_parts), total_duration
-
-
 def build_filter_complex(
     num_images: int,
     font_path: str,
-    hook_text: str,
-    cta_text: str,
+    text_scene_1: str,
+    text_scene_2: str,
     music_path: Path | None,
 ) -> tuple[str, list[str], float]:
-    image_filters, total_duration = build_xfade_chain(num_images)
-    escaped_font = font_path.replace(":", "\\:")
-    scene_split = (num_images // 2) * IMG_DURATION
-    if scene_split <= 0 or scene_split >= total_duration:
-        scene_split = total_duration / 2
+    scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
+    if not any(scene_texts):
+        raise ValueError("Scene text is empty after sanitization")
 
-    text_filters = (
-        f"[v_images_merged]"
-        f"drawtext=fontfile={escaped_font}:text='{hook_text}':fontcolor=white:fontsize={FONT_SIZE}:"
-        f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={TEXT_Y}:line_spacing=10:"
-        f"enable='between(t\\,0\\,{scene_split})',"
-        f"drawtext=fontfile={escaped_font}:text='{cta_text}':fontcolor=0x00D7FF:fontsize={FONT_SIZE}:"
-        f"borderw=3:bordercolor=black:x=(w-text_w)/2:y={TEXT_Y}:line_spacing=10:"
-        f"enable='between(t\\,{scene_split}\\,{total_duration})'[v_final];"
+    image_filters, total_duration = build_scene_pipeline(
+        num_images, font_path, scene_texts
     )
 
     audio_input: list[str]
@@ -226,7 +268,7 @@ def build_filter_complex(
         audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
         audio_filters = f"[{num_images}:a]atrim=0:{total_duration}[a_final]"
 
-    return image_filters + text_filters + audio_filters, audio_input, total_duration
+    return image_filters + audio_filters, audio_input, total_duration
 
 
 @app.get("/health")
@@ -234,7 +276,10 @@ def health_check() -> dict:
     return {
         "status": "healthy",
         "ffmpeg_installed": shutil.which("ffmpeg") is not None,
-        "font_installed": Path(FONT_PATH).exists() or Path(FALLBACK_FONT).exists(),
+        "font_installed": any(
+            Path(path).exists()
+            for path in (FONT_PATH, FALLBACK_FONT, FALLBACK_FONT_ALT, CUSTOM_FONT)
+        ),
     }
 
 
@@ -270,9 +315,9 @@ async def render_video(
                 downloaded_images.append(img_path)
 
             font_path = resolve_font_path()
-            hook_text = prepare_scene_text(payload.text_scene_1)
-            cta_text = prepare_scene_text(payload.text_scene_2)
-            if not hook_text or not cta_text:
+            if not split_scene_lines(payload.text_scene_1) or not split_scene_lines(
+                payload.text_scene_2
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail="text_scene_1 and text_scene_2 must contain valid plain text.",
@@ -281,7 +326,11 @@ async def render_video(
             music_path = resolve_bg_music(payload.bg_music)
             num_images = len(downloaded_images)
             filter_complex, audio_input, total_duration = build_filter_complex(
-                num_images, font_path, hook_text, cta_text, music_path
+                num_images,
+                font_path,
+                payload.text_scene_1,
+                payload.text_scene_2,
+                music_path,
             )
 
             command = ["ffmpeg", "-y"]
