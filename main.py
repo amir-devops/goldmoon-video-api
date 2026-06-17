@@ -28,7 +28,9 @@ MUSIC_SEARCH_DIRS = (ASSETS_DIR, SOUNDS_DIR, APP_DIR)
 
 API_KEY_SECRET = os.getenv("VIDEO_API_KEY", "GoldmoonSecret2026")
 CUSTOM_FONT = APP_DIR / "PlayfairDisplay-Regular.ttf"
-FONT_PATH = os.getenv("FONT_PATH", str(CUSTOM_FONT))
+MONTSERRAT_FONT = ASSETS_DIR / "Montserrat-Bold.ttf"
+OSWALD_FONT = ASSETS_DIR / "Oswald-Bold.ttf"
+FONT_PATH = os.getenv("FONT_PATH", str(MONTSERRAT_FONT))
 FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FALLBACK_FONT_ALT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
@@ -41,7 +43,9 @@ DURATION_FRAMES = int(IMG_DURATION * FRAMERATE)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 FFMPEG_TIMEOUT = 120
 WRAP_CHARS = 28
-SCENE_FONT_SIZE = 52
+SCENE_FONT_SIZE = 46
+SCENE_TEXT_START_Y = 1100
+SCENE_LINE_SPACING = 85
 
 OUTRO_DURATION = 3.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
@@ -72,9 +76,18 @@ def verify_api_key(x_api_key: str | None = Header(default=None)) -> str:
 
 
 def resolve_font_path() -> str:
-    for candidate in (FONT_PATH, FALLBACK_FONT, FALLBACK_FONT_ALT):
-        if Path(candidate).exists():
-            return str(candidate)
+    env_font = os.getenv("FONT_PATH")
+    candidates = [
+        env_font,
+        str(MONTSERRAT_FONT),
+        str(OSWALD_FONT),
+        str(CUSTOM_FONT),
+        FALLBACK_FONT,
+        FALLBACK_FONT_ALT,
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
     raise HTTPException(status_code=500, detail="No suitable bold system font found.")
 
 
@@ -150,12 +163,11 @@ def build_scene_filter(
     duration_frames: int = DURATION_FRAMES,
 ) -> str:
     """
-    Per-scene pipeline:
-    1. Loop single image frame for zoompan stability
-    2. Scale + center crop to preserve aspect ratio (no stretching)
-    3. Ken Burns zoompan at fixed FPS
-    4. One drawtext filter per line (avoids \\n rendering bugs)
-    5. fps filter to lock output timebase
+    Premium scene pipeline:
+    1. Loop + scale + center crop + Ken Burns (no stretch)
+    2. Shorts safe-zone text placement (y=1100+)
+    3. UPPERCASE luxury styling + cinematic transparent box
+    4. Locked 30 FPS timebase
     """
     base_filter = (
         f"loop={duration_frames}:1:0,"
@@ -172,13 +184,13 @@ def build_scene_filter(
     escaped_font = font_path.replace(":", "\\:")
     text_filters: list[str] = []
     for index, line in enumerate(text_lines):
-        clean_line = escape_drawtext(line)
-        y_position = f"(h-text_h)/2+320+({index}*65)"
+        premium_line = escape_drawtext(line.strip().upper())
+        y_position = f"{SCENE_TEXT_START_Y}+({index}*{SCENE_LINE_SPACING})"
         text_filters.append(
-            f"drawtext=fontfile={escaped_font}:text='{clean_line}':"
-            f"fontcolor=white:fontsize={SCENE_FONT_SIZE}:box=0:"
-            f"x=(w-text_w)/2:y={y_position}:"
-            f"borderw=3:bordercolor=black"
+            f"drawtext=fontfile={escaped_font}:text='{premium_line}':"
+            f"fontcolor=white:fontsize={SCENE_FONT_SIZE}:"
+            f"box=1:boxcolor=black@0.4:boxborderw=20:"
+            f"x=(w-text_w)/2:y={y_position}"
         )
 
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
@@ -337,7 +349,14 @@ def health_check() -> dict:
         "ffmpeg_installed": shutil.which("ffmpeg") is not None,
         "font_installed": any(
             Path(path).exists()
-            for path in (FONT_PATH, FALLBACK_FONT, FALLBACK_FONT_ALT, CUSTOM_FONT)
+            for path in (
+                FONT_PATH,
+                MONTSERRAT_FONT,
+                OSWALD_FONT,
+                CUSTOM_FONT,
+                FALLBACK_FONT,
+                FALLBACK_FONT_ALT,
+            )
         ),
     }
 
