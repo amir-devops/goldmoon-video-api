@@ -152,14 +152,16 @@ def build_scene_filter(
     """
     Per-scene pipeline:
     1. Loop single image frame for zoompan stability
-    2. Full-screen crop + Ken Burns zoompan at fixed FPS
-    3. One drawtext filter per line (avoids \\n rendering bugs)
-    4. fps filter to lock output timebase
+    2. Scale + center crop to preserve aspect ratio (no stretching)
+    3. Ken Burns zoompan at fixed FPS
+    4. One drawtext filter per line (avoids \\n rendering bugs)
+    5. fps filter to lock output timebase
     """
     base_filter = (
         f"loop={duration_frames}:1:0,"
         "format=yuv420p,"
-        "scale=1620:2880:force_original_aspect_ratio=increase,"
+        "scale=w=1620:h=2880:force_original_aspect_ratio=increase,"
+        "crop=1620:2880,"
         f"zoompan=z='min(zoom+0.001\\,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
         f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}"
     )
