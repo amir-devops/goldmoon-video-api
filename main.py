@@ -6,14 +6,14 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl
 
 from render_pipeline import (
     APP_DIR,
@@ -31,7 +31,6 @@ from render_pipeline import (
     RenderError,
     load_presets,
     render_video,
-    require_english_text,
     safe_output_filename,
 )
 from sanity_client import (
@@ -40,7 +39,6 @@ from sanity_client import (
     SanityError,
     fetch_all_tours,
     fetch_tour_by_slug,
-    tour_image_urls,
 )
 
 app = FastAPI(title="Goldmoon Cinematic Video API", version="2.0")
@@ -51,21 +49,16 @@ FONT_PATH = os.getenv("FONT_PATH", str(MONTSERRAT_FONT))
 render_semaphore = asyncio.Semaphore(1)
 
 
+class Scene(BaseModel):
+    image_url: HttpUrl
+    text: str = Field(..., max_length=60)
+
+
 class VideoRequest(BaseModel):
-    image_urls: list[HttpUrl] | None = Field(default=None, min_length=2, max_length=4)
-    tour_slug: str | None = Field(default=None, max_length=96)
-    video_title: str = Field("goldmoon_promo", max_length=50)
-    text_scene_1: str | None = Field(default=None, max_length=60)
-    text_scene_2: str | None = Field(default=None, max_length=60)
-    bg_music: Literal["desert_ambient", "luxury_chill", "cinematic_epic"] = "luxury_chill"
-    style: str | None = Field(
-        default=None,
+    style: str = Field(
+        default="",
         max_length=32,
-        description="Visual preset override. Omit or use unknown name for a random style.",
-    )
-    debug_mode: bool = Field(
-        False,
-        description="When true, renders a ~3 second preview instead of the full video.",
+        description="Visual preset name. Omit or use unknown name for a random style.",
     )
     logo_url: HttpUrl | None = Field(
         default=None,
@@ -76,65 +69,21 @@ class VideoRequest(BaseModel):
         max_length=200,
         description="Website URL displayed at the bottom of the outro.",
     )
+    scenes: list[Scene] = Field(
+        ...,
+        min_length=2,
+        max_length=4,
+        description="2-4 scenes, each with an image URL and overlay text.",
+    )
 
-    @model_validator(mode="after")
-    def validate_image_source(self) -> "VideoRequest":
-        if not self.tour_slug and not self.image_urls:
-            raise ValueError("Provide either tour_slug or image_urls (2-4 items).")
-        return self
 
-
-def resolve_render_request(payload: VideoRequest) -> dict:
-    image_urls = [str(url) for url in payload.image_urls] if payload.image_urls else []
-    text_scene_1 = payload.text_scene_1
-    text_scene_2 = payload.text_scene_2
-    video_title = payload.video_title
-    bg_music = payload.bg_music
-    style = payload.style
-
-    if payload.tour_slug:
-        try:
-            tour = fetch_tour_by_slug(payload.tour_slug)
-        except SanityError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        if not tour:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tour not found in Sanity: {payload.tour_slug}",
-            )
-
-        image_urls = tour_image_urls(tour)
-        text_scene_1 = text_scene_1 or tour.get("text_scene_1")
-        text_scene_2 = text_scene_2 or tour.get("text_scene_2")
-        if video_title == "goldmoon_promo" and tour.get("title"):
-            video_title = tour["title"]
-        if tour.get("bg_music") in {"desert_ambient", "luxury_chill", "cinematic_epic"}:
-            bg_music = tour["bg_music"]
-        if style is None and tour.get("style"):
-            style = tour["style"]
-
-    if len(image_urls) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="At least 2 image URLs are required for rendering.",
-        )
-    if len(image_urls) > 4:
-        image_urls = image_urls[:4]
-
-    if not text_scene_1 or not text_scene_2:
-        raise HTTPException(
-            status_code=400,
-            detail="text_scene_1 and text_scene_2 are required.",
-        )
-
+def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
     return {
-        "image_urls": image_urls,
-        "text_scene_1": text_scene_1,
-        "text_scene_2": text_scene_2,
-        "video_title": video_title,
-        "bg_music": bg_music,
-        "style": style or "",
-        "debug_mode": payload.debug_mode,
+        "scenes": [
+            {"image_url": str(scene.image_url), "text": scene.text}
+            for scene in payload.scenes
+        ],
+        "style": payload.style or "",
         "logo_url": str(payload.logo_url) if payload.logo_url else None,
         "website_url": payload.website_url.strip() or DEFAULT_WEBSITE_URL,
     }
@@ -258,16 +207,17 @@ def run_n8n_cli() -> None:
             sys.exit(1)
 
     try:
+        scenes = []
+        split_at = len(image_args) // 2
+        for index, image_path in enumerate(image_paths):
+            text = text_scene_1 if index < split_at else text_scene_2
+            scenes.append({"image_path": image_path, "text": text})
+
         result = render_video(
             {
-                "image_paths": image_paths,
-                "text_scene_1": text_scene_1,
-                "text_scene_2": text_scene_2,
-                "video_title": video_title,
-                "bg_music": bg_music,
+                "scenes": scenes,
                 "output_path": output_path,
                 "style": style,
-                "debug_mode": debug_mode,
                 "logo_path": downloaded_logo,
                 "website_url": website_url,
             }
@@ -383,11 +333,12 @@ async def render_video_endpoint(
                         detail="Failed to download logo_url",
                     ) from exc
 
-            for idx, url in enumerate(render_data["image_urls"]):
+            for idx, scene in enumerate(render_data["scenes"]):
+                url = scene["image_url"]
                 if not is_url_safe(url):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Unsafe image URL at index {idx}",
+                        detail=f"Unsafe image URL at scene index {idx}",
                     )
                 img_path = APP_DIR / f"img_{job_id}_{idx}.jpg"
                 try:
@@ -397,28 +348,22 @@ async def render_video_endpoint(
                 except Exception as exc:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Invalid image at index {idx}",
+                        detail=f"Invalid image at scene index {idx}",
                     ) from exc
                 downloaded_images.append(img_path)
 
-            try:
-                require_english_text(render_data["text_scene_1"], "text_scene_1")
-                require_english_text(render_data["text_scene_2"], "text_scene_2")
-            except RenderError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            pipeline_scenes = [
+                {"image_path": downloaded_images[idx], "text": scene["text"]}
+                for idx, scene in enumerate(render_data["scenes"])
+            ]
 
             try:
                 await asyncio.to_thread(
                     render_video,
                     {
-                        "image_paths": downloaded_images,
-                        "text_scene_1": render_data["text_scene_1"],
-                        "text_scene_2": render_data["text_scene_2"],
-                        "video_title": render_data["video_title"],
-                        "bg_music": render_data["bg_music"],
+                        "scenes": pipeline_scenes,
                         "output_path": output_video,
                         "style": render_data["style"],
-                        "debug_mode": render_data["debug_mode"],
                         "logo_path": downloaded_logo,
                         "website_url": render_data["website_url"],
                     },
@@ -428,7 +373,8 @@ async def render_video_endpoint(
                     raise HTTPException(status_code=504, detail=str(exc)) from exc
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-            download_name = safe_output_filename(render_data["video_title"])
+            style_slug = render_data["style"] or "promo"
+            download_name = safe_output_filename(f"goldmoon_{style_slug}")
             background_tasks.add_task(output_video.unlink, missing_ok=True)
             return FileResponse(
                 path=str(output_video),

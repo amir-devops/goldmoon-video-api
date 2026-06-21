@@ -359,15 +359,16 @@ def build_scene_vf_filter(
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
 
 
-def assign_scene_texts(
-    num_images: int,
-    text_scene_1: str,
-    text_scene_2: str,
-) -> list[list[str]]:
-    lines_1 = split_scene_lines(text_scene_1)
-    lines_2 = split_scene_lines(text_scene_2)
-    split_at = num_images // 2
-    return [lines_1 if index < split_at else lines_2 for index in range(num_images)]
+def build_per_scene_texts(scene_texts: list[str]) -> list[list[str]]:
+    """Map each scene's text to drawtext lines."""
+    result: list[list[str]] = []
+    for index, text in enumerate(scene_texts):
+        cleaned = require_english_text(text, f"scenes[{index}].text")
+        lines = split_scene_lines(cleaned)
+        if not lines:
+            raise RenderError(f"scenes[{index}].text must contain valid plain text.")
+        result.append(lines)
+    return result
 
 
 def build_scene_pipeline(
@@ -447,16 +448,14 @@ def build_outro_filter(
 def build_filter_complex(
     num_images: int,
     font_path: str,
-    text_scene_1: str,
-    text_scene_2: str,
+    scene_texts: list[list[str]],
     music_path: Path | None,
     logo_path: Path | None,
     preset: dict[str, Any],
     website_url: str = DEFAULT_WEBSITE_URL,
     debug_mode: bool = False,
 ) -> tuple[str, list[str], list[str], float]:
-    scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
-    if not any(scene_texts):
+    if not scene_texts or not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
 
     img_duration, xfade_duration, outro_duration, duration_frames = resolve_render_timing(
@@ -552,28 +551,23 @@ def render_video(data: dict[str, Any]) -> Path:
     Modular render entry point.
 
     Expected keys:
-      image_paths, text_scene_1, text_scene_2, video_title
+      scenes: list[{"image_path": Path|str, "text": str}] (2-4 items)
     Optional:
       bg_music, style, debug_mode, logo_path, website_url, output_path
     """
-    image_paths = [Path(p) for p in data["image_paths"]]
-    text_scene_1 = data["text_scene_1"]
-    text_scene_2 = data["text_scene_2"]
-    video_title = data["video_title"]
+    raw_scenes = data["scenes"]
+    if len(raw_scenes) < 2 or len(raw_scenes) > 4:
+        raise RenderError("Please provide 2 to 4 scenes.")
+
+    image_paths = [Path(scene["image_path"]) for scene in raw_scenes]
+    scene_texts = build_per_scene_texts([scene["text"] for scene in raw_scenes])
+
     bg_music = data.get("bg_music", "luxury_chill")
     debug_mode = bool(data.get("debug_mode", False))
     logo_path = Path(data["logo_path"]) if data.get("logo_path") else None
     website_url = data.get("website_url", DEFAULT_WEBSITE_URL)
     output_path = Path(data["output_path"]) if data.get("output_path") else None
     style_name = data.get("style", "")
-
-    if len(image_paths) < 2 or len(image_paths) > 4:
-        raise RenderError("Please provide 2 to 4 images.")
-
-    scene_1 = require_english_text(text_scene_1, "text_scene_1")
-    scene_2 = require_english_text(text_scene_2, "text_scene_2")
-    if not split_scene_lines(scene_1) or not split_scene_lines(scene_2):
-        raise RenderError("text_scene_1 and text_scene_2 must contain valid plain text.")
 
     for image_path in image_paths:
         validate_local_image(image_path)
@@ -587,8 +581,7 @@ def render_video(data: dict[str, Any]) -> Path:
     filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
         num_images,
         font_path,
-        scene_1,
-        scene_2,
+        scene_texts,
         music_path,
         effective_logo,
         preset,
@@ -597,9 +590,7 @@ def render_video(data: dict[str, Any]) -> Path:
     )
 
     if output_path is None:
-        safe_title = sanitize_plain_text(video_title, max_chars=50)
-        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_title).strip("._") or "goldmoon_promo"
-        output_path = APP_DIR / f"output_{slug}.mp4"
+        output_path = APP_DIR / f"output_goldmoon_{resolved_style}.mp4"
 
     command = ["ffmpeg", "-y"]
     for img in image_paths:
