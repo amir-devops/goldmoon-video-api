@@ -1,6 +1,7 @@
 ﻿import asyncio
 import io
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -9,14 +10,23 @@ import sys
 import textwrap
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
+
+from sanity_client import (
+    SANITY_DATASET,
+    SANITY_PROJECT_ID,
+    SanityError,
+    fetch_all_tours,
+    fetch_tour_by_slug,
+    tour_image_urls,
+)
 
 app = FastAPI(title="Goldmoon Cinematic Video API", version="2.0")
 
@@ -63,6 +73,19 @@ BG_MUSIC_ALIASES = {
     "cinematic_epic": "samuelfjohanns-cinematic-duduk-192901.mp3",
 }
 
+PRESETS_PATH = Path(__file__).resolve().parent / "presets.json"
+DEFAULT_STYLE = "desert_safari"
+DEBUG_TOTAL_DURATION = 3.0
+
+FONT_PRESET_MAP = {
+    "classic": CUSTOM_FONT,
+    "script": CUSTOM_FONT,
+    "thin": MONTSERRAT_FONT,
+    "simple": MONTSERRAT_FONT,
+    "bold": OSWALD_FONT,
+}
+
+_preset_cache: dict[str, Any] | None = None
 render_semaphore = asyncio.Semaphore(1)
 
 
@@ -71,17 +94,153 @@ class RenderError(Exception):
 
 
 class VideoRequest(BaseModel):
-    image_urls: list[HttpUrl] = Field(..., min_length=2, max_length=4)
+    image_urls: list[HttpUrl] | None = Field(default=None, min_length=2, max_length=4)
+    tour_slug: str | None = Field(default=None, max_length=96)
     video_title: str = Field("goldmoon_promo", max_length=50)
-    text_scene_1: str = Field(..., max_length=60)
-    text_scene_2: str = Field(..., max_length=60)
+    text_scene_1: str | None = Field(default=None, max_length=60)
+    text_scene_2: str | None = Field(default=None, max_length=60)
     bg_music: Literal["desert_ambient", "luxury_chill", "cinematic_epic"] = "luxury_chill"
+    style: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Visual preset override. Omit to use the tour's Sanity style.",
+    )
+    debug_mode: bool = Field(
+        False,
+        description="When true, renders a ~3 second preview instead of the full video.",
+    )
+
+    @model_validator(mode="after")
+    def validate_image_source(self) -> "VideoRequest":
+        if not self.tour_slug and not self.image_urls:
+            raise ValueError("Provide either tour_slug or image_urls (2-4 items).")
+        return self
+
+
+def resolve_render_request(payload: VideoRequest) -> dict[str, str | list[str]]:
+    image_urls = [str(url) for url in payload.image_urls] if payload.image_urls else []
+    text_scene_1 = payload.text_scene_1
+    text_scene_2 = payload.text_scene_2
+    video_title = payload.video_title
+    bg_music = payload.bg_music
+    style = payload.style
+
+    if payload.tour_slug:
+        try:
+            tour = fetch_tour_by_slug(payload.tour_slug)
+        except SanityError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if not tour:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tour not found in Sanity: {payload.tour_slug}",
+            )
+
+        image_urls = tour_image_urls(tour)
+        text_scene_1 = text_scene_1 or tour.get("text_scene_1")
+        text_scene_2 = text_scene_2 or tour.get("text_scene_2")
+        if video_title == "goldmoon_promo" and tour.get("title"):
+            video_title = tour["title"]
+        if tour.get("bg_music") in {"desert_ambient", "luxury_chill", "cinematic_epic"}:
+            bg_music = tour["bg_music"]
+        if style is None and tour.get("style"):
+            style = tour["style"]
+
+    if len(image_urls) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 image URLs are required for rendering.",
+        )
+    if len(image_urls) > 4:
+        image_urls = image_urls[:4]
+
+    if not text_scene_1 or not text_scene_2:
+        raise HTTPException(
+            status_code=400,
+            detail="text_scene_1 and text_scene_2 are required.",
+        )
+
+    style = (style or DEFAULT_STYLE).strip().lower().replace("-", "_").replace(" ", "_")
+    try:
+        get_preset(style)
+    except RenderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "image_urls": image_urls,
+        "text_scene_1": text_scene_1,
+        "text_scene_2": text_scene_2,
+        "video_title": video_title,
+        "bg_music": bg_music,
+        "style": style,
+        "debug_mode": payload.debug_mode,
+    }
 
 
 def verify_api_key(x_api_key: str | None = Header(default=None)) -> str:
     if x_api_key != API_KEY_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid API Key")
     return x_api_key
+
+
+def load_presets() -> dict[str, Any]:
+    global _preset_cache
+    if _preset_cache is None:
+        preset_path = PRESETS_PATH if PRESETS_PATH.exists() else APP_DIR / "presets.json"
+        if not preset_path.exists():
+            raise RenderError(f"Presets file not found: {preset_path}")
+        with preset_path.open(encoding="utf-8") as handle:
+            _preset_cache = json.load(handle)
+    return _preset_cache
+
+
+def get_preset(style: str) -> dict[str, Any]:
+    key = style.strip().lower().replace("-", "_").replace(" ", "_")
+    presets = load_presets()
+    if key not in presets:
+        available = ", ".join(sorted(presets))
+        raise RenderError(f"Unknown style '{style}'. Available: {available}")
+    return presets[key]
+
+
+def list_preset_names() -> list[str]:
+    return sorted(load_presets())
+
+
+def resolve_render_timing(
+    debug_mode: bool,
+    num_images: int,
+) -> tuple[float, float, float, int]:
+    """Return img_duration, xfade_duration, outro_duration, duration_frames."""
+    if debug_mode:
+        xfade_duration = 0.25
+        outro_duration = 0.75
+        img_duration = (
+            DEBUG_TOTAL_DURATION - outro_duration + xfade_duration + (num_images - 1) * xfade_duration
+        ) / num_images
+        return img_duration, xfade_duration, outro_duration, int(img_duration * FRAMERATE)
+    return IMG_DURATION, XFADE_DURATION, OUTRO_DURATION, DURATION_FRAMES
+
+
+def resolve_font_for_preset(preset: dict[str, Any]) -> str:
+    font_key = preset.get("text", {}).get("font", "bold")
+    preferred = FONT_PRESET_MAP.get(font_key, MONTSERRAT_FONT)
+    candidates = [
+        str(preferred),
+        str(MONTSERRAT_FONT),
+        str(OSWALD_FONT),
+        str(CUSTOM_FONT),
+        FALLBACK_FONT,
+        FALLBACK_FONT_ALT,
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return resolve_font_path()
+
+
+def ffmpeg_escape_filter_expr(expr: str) -> str:
+    return expr.replace(",", "\\,")
 
 
 def resolve_font_path() -> str:
@@ -180,45 +339,103 @@ def split_scene_lines(text: str, max_lines: int = 2) -> list[str]:
     return textwrap.wrap(plain_text, width=WRAP_CHARS)[:max_lines]
 
 
+def build_drawtext_filters(
+    font_path: str,
+    text_lines: list[str],
+    text_preset: dict[str, Any],
+) -> list[str]:
+    escaped_font = font_path.replace(":", "\\:")
+    text_filters: list[str] = []
+    fontsize = int(text_preset.get("fontsize", SCENE_FONT_SIZE))
+    line_spacing = int(text_preset.get("line_spacing", SCENE_LINE_SPACING))
+    fade_delay = float(text_preset.get("fade_delay", TEXT_FADE_DELAY))
+    fade_duration = float(text_preset.get("fade_duration", TEXT_FADE_DURATION))
+    uppercase = bool(text_preset.get("uppercase", True))
+    text_y = text_preset.get("text_y", SCENE_TEXT_START_Y)
+
+    for index, line in enumerate(text_lines):
+        display_line = line.strip()
+        if uppercase:
+            display_line = display_line.upper()
+        premium_line = escape_drawtext(display_line)
+
+        if text_y == "center":
+            y_position = f"(h-text_h)/2+({index}*{line_spacing})"
+        else:
+            y_position = f"{text_y}+({index}*{line_spacing})"
+
+        parts = [
+            f"drawtext=fontfile={escaped_font}",
+            f"text='{premium_line}'",
+            f"fontcolor={text_preset.get('fontcolor', 'white')}",
+            f"fontsize={fontsize}",
+            "x=(w-text_w)/2",
+            f"y={y_position}",
+            (
+                "alpha='if(lt(t\\,"
+                f"{fade_delay})\\,0\\,"
+                f"min((t-{fade_delay})/{fade_duration}\\,1))'"
+            ),
+        ]
+
+        if text_preset.get("box"):
+            parts.extend(
+                [
+                    "box=1",
+                    f"boxcolor={text_preset.get('boxcolor', 'black@0.4')}",
+                    f"boxborderw={int(text_preset.get('boxborderw', 20))}",
+                ]
+            )
+        else:
+            parts.append("box=0")
+
+        if text_preset.get("shadowcolor"):
+            parts.extend(
+                [
+                    f"shadowcolor={text_preset['shadowcolor']}",
+                    f"shadowx={int(text_preset.get('shadowx', 2))}",
+                    f"shadowy={int(text_preset.get('shadowy', 2))}",
+                ]
+            )
+
+        if text_preset.get("borderw"):
+            parts.extend(
+                [
+                    f"borderw={int(text_preset['borderw'])}",
+                    f"bordercolor={text_preset.get('bordercolor', 'white@0.35')}",
+                ]
+            )
+
+        text_filters.append(":".join(parts))
+
+    return text_filters
+
+
 def build_scene_filter(
     font_path: str,
     text_lines: list[str],
-    duration_frames: int = DURATION_FRAMES,
+    preset: dict[str, Any],
+    duration_frames: int,
 ) -> str:
-    """
-    Premium scene pipeline:
-    1. Loop + scale + center crop + Ken Burns (no stretch)
-    2. Shorts safe-zone text placement (y=1100+)
-    3. UPPERCASE luxury styling + cinematic transparent box
-    4. Smooth text + box fade-in via alpha
-    5. Locked 30 FPS timebase
-    """
+    zoom = preset.get("zoom", {})
+    z_expr = ffmpeg_escape_filter_expr(zoom.get("z", "min(zoom+0.001,1.15)"))
+    x_expr = zoom.get("x", "iw/2-(iw/zoom/2)")
+    y_expr = zoom.get("y", "ih/2-(ih/zoom/2)")
+
     base_filter = (
         f"loop={duration_frames}:1:0,"
         "format=yuv420p,"
         "scale=w=1620:h=2880:force_original_aspect_ratio=increase,"
         "crop=1620:2880,"
-        f"zoompan=z='min(zoom+0.001\\,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
         f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}"
     )
 
     if not text_lines:
         return f"{base_filter},fps={FRAMERATE}"
 
-    escaped_font = font_path.replace(":", "\\:")
-    text_filters: list[str] = []
-    for index, line in enumerate(text_lines):
-        premium_line = escape_drawtext(line.strip().upper())
-        y_position = f"{SCENE_TEXT_START_Y}+({index}*{SCENE_LINE_SPACING})"
-        text_filters.append(
-            f"drawtext=fontfile={escaped_font}:text='{premium_line}':"
-            f"fontcolor=white:fontsize={SCENE_FONT_SIZE}:"
-            f"box=1:boxcolor=black@0.4:boxborderw=20:"
-            f"x=(w-text_w)/2:y={y_position}:"
-            f"alpha='if(lt(t\\,{TEXT_FADE_DELAY})\\,0\\,"
-            f"min((t-{TEXT_FADE_DELAY})/{TEXT_FADE_DURATION}\\,1))'"
-        )
-
+    text_preset = preset.get("text", {})
+    text_filters = build_drawtext_filters(font_path, text_lines, text_preset)
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
 
 
@@ -226,30 +443,36 @@ def build_scene_pipeline(
     num_images: int,
     font_path: str,
     scene_texts: list[list[str]],
+    preset: dict[str, Any],
+    img_duration: float,
+    xfade_duration: float,
+    duration_frames: int,
 ) -> tuple[str, float]:
-    """Build Ken Burns scene filters + xfade chain. Returns (filter_str, total_duration)."""
+    """Build preset-driven scene filters + xfade chain. Returns (filter_str, total_duration)."""
     filter_parts: list[str] = []
 
     for i in range(num_images):
-        scene_filter = build_scene_filter(font_path, scene_texts[i])
+        scene_filter = build_scene_filter(font_path, scene_texts[i], preset, duration_frames)
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
     last_output = "[v_scene_0]"
-    current_offset = IMG_DURATION - XFADE_DURATION
+    current_offset = img_duration - xfade_duration
     for i in range(1, num_images):
         next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
         filter_parts.append(
-            f"{last_output}[v_scene_{i}]xfade=transition=fade:duration={XFADE_DURATION}:"
+            f"{last_output}[v_scene_{i}]xfade=transition=fade:duration={xfade_duration}:"
             f"offset={current_offset}{next_label};"
         )
         last_output = next_label
-        current_offset += IMG_DURATION - XFADE_DURATION
+        current_offset += img_duration - xfade_duration
 
-    filter_parts.append(
-        "[v_images_merged]eq=contrast=1.1:saturation=1.15[v_graded];"
-    )
+    merge_filter = preset.get("filter", "").strip()
+    if merge_filter:
+        filter_parts.append(f"[v_images_merged]{merge_filter}[v_graded];")
+    else:
+        filter_parts.append("[v_images_merged]format=yuv420p[v_graded];")
 
-    images_duration = (IMG_DURATION * num_images) - (XFADE_DURATION * (num_images - 1))
+    images_duration = (img_duration * num_images) - (xfade_duration * (num_images - 1))
     return "".join(filter_parts), images_duration
 
 
@@ -353,41 +576,54 @@ def build_filter_complex(
     text_scene_2: str,
     music_path: Path | None,
     logo_path: Path | None,
+    preset: dict[str, Any],
+    debug_mode: bool = False,
 ) -> tuple[str, list[str], list[str], float]:
     scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
     if not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
 
+    img_duration, xfade_duration, outro_duration, duration_frames = resolve_render_timing(
+        debug_mode, num_images
+    )
+    outro_frames = int(outro_duration * FRAMERATE)
+
     image_filters, images_duration = build_scene_pipeline(
-        num_images, font_path, scene_texts
+        num_images,
+        font_path,
+        scene_texts,
+        preset,
+        img_duration,
+        xfade_duration,
+        duration_frames,
     )
 
     outro_bg_idx = num_images
     music_idx = num_images + 1
-    outro_offset = images_duration - XFADE_DURATION
-    total_duration = images_duration + OUTRO_DURATION - XFADE_DURATION
+    outro_offset = images_duration - xfade_duration
+    total_duration = images_duration + outro_duration - xfade_duration
 
     if logo_path:
         outro_filters = (
             build_outro_with_logo_filter(
-                font_path, num_images, WEBSITE_URL, OUTRO_FRAMES
+                font_path, num_images, WEBSITE_URL, outro_frames
             )
             + ";"
-            + f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
+            + f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
             f"offset={outro_offset}[v_final];"
         )
         outro_input = ["-i", str(logo_path)]
     else:
         outro_filters = (
-            f"[{outro_bg_idx}:v]{build_outro_filter(font_path)}[v_outro];"
-            f"[v_graded][v_outro]xfade=transition=fade:duration={XFADE_DURATION}:"
+            f"[{outro_bg_idx}:v]{build_outro_filter(font_path, outro_frames)}[v_outro];"
+            f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
             f"offset={outro_offset}[v_final];"
         )
         outro_input = [
             "-f",
             "lavfi",
             "-i",
-            f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={OUTRO_DURATION}:r={FRAMERATE}",
+            f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={outro_duration}:r={FRAMERATE}",
         ]
 
     if music_path and music_path.exists():
@@ -427,6 +663,8 @@ def execute_render(
     video_title: str,
     bg_music: str = "luxury_chill",
     output_path: Path | None = None,
+    style: str = DEFAULT_STYLE,
+    debug_mode: bool = False,
 ) -> Path:
     if len(image_paths) < 2 or len(image_paths) > 4:
         raise RenderError("Please provide 2 to 4 images.")
@@ -439,8 +677,9 @@ def execute_render(
     for image_path in image_paths:
         validate_local_image(image_path)
 
+    preset = get_preset(style)
     try:
-        font_path = resolve_font_path()
+        font_path = resolve_font_for_preset(preset)
     except HTTPException as exc:
         raise RenderError(str(exc.detail)) from exc
 
@@ -455,6 +694,8 @@ def execute_render(
         scene_2,
         music_path,
         logo_path,
+        preset,
+        debug_mode=debug_mode,
     )
 
     if output_path is None:
@@ -560,6 +801,8 @@ def run_n8n_cli() -> None:
     image_paths = [Path(arg).resolve() for arg in image_args]
     output_name = safe_output_filename(video_title)
     output_path = Path.cwd() / f"output_{Path(output_name).stem}.mp4"
+    style = os.getenv("STYLE", DEFAULT_STYLE).strip().lower().replace("-", "_")
+    debug_mode = os.getenv("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes"}
 
     try:
         result = execute_render(
@@ -569,6 +812,8 @@ def run_n8n_cli() -> None:
             video_title=video_title,
             bg_music=bg_music,
             output_path=output_path,
+            style=style,
+            debug_mode=debug_mode,
         )
     except RenderError as exc:
         print(f"Error: {exc}")
@@ -579,6 +824,13 @@ def run_n8n_cli() -> None:
 
 @app.get("/health")
 def health_check() -> dict:
+    try:
+        preset_names = list_preset_names()
+        presets_loaded = True
+    except RenderError:
+        preset_names = []
+        presets_loaded = False
+
     return {
         "status": "healthy",
         "ffmpeg_installed": shutil.which("ffmpeg") is not None,
@@ -594,7 +846,48 @@ def health_check() -> dict:
             )
         ),
         "logo_installed": LOGO_PATH.exists(),
+        "presets_loaded": presets_loaded,
+        "preset_count": len(preset_names),
+        "presets": preset_names,
+        "default_style": DEFAULT_STYLE,
+        "sanity_project_id": SANITY_PROJECT_ID,
+        "sanity_dataset": SANITY_DATASET,
     }
+
+
+@app.get("/presets")
+def list_presets(_auth: str = Depends(verify_api_key)) -> dict:
+    presets = load_presets()
+    return {
+        "default_style": DEFAULT_STYLE,
+        "styles": {
+            key: {
+                "display_name": value.get("display_name", key),
+                "filter": value.get("filter", ""),
+                "zoom": value.get("zoom", {}),
+            }
+            for key, value in presets.items()
+        },
+    }
+
+
+@app.get("/sanity/tours")
+def list_sanity_tours(_auth: str = Depends(verify_api_key)) -> list[dict]:
+    try:
+        return fetch_all_tours()
+    except SanityError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/sanity/tours/{slug}")
+def get_sanity_tour(slug: str, _auth: str = Depends(verify_api_key)) -> dict:
+    try:
+        tour = fetch_tour_by_slug(slug)
+    except SanityError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not tour:
+        raise HTTPException(status_code=404, detail=f"Tour not found: {slug}")
+    return tour
 
 
 @app.post("/render", response_class=FileResponse)
@@ -609,8 +902,9 @@ async def render_video(
         output_video = APP_DIR / f"video_{job_id}.mp4"
 
         try:
-            for idx, url_obj in enumerate(payload.image_urls):
-                url = str(url_obj)
+            render_data = resolve_render_request(payload)
+
+            for idx, url in enumerate(render_data["image_urls"]):
                 if not is_url_safe(url):
                     raise HTTPException(
                         status_code=400,
@@ -629,8 +923,8 @@ async def render_video(
                 downloaded_images.append(img_path)
 
             try:
-                require_english_text(payload.text_scene_1, "text_scene_1")
-                require_english_text(payload.text_scene_2, "text_scene_2")
+                require_english_text(render_data["text_scene_1"], "text_scene_1")
+                require_english_text(render_data["text_scene_2"], "text_scene_2")
             except RenderError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -638,18 +932,20 @@ async def render_video(
                 await asyncio.to_thread(
                     execute_render,
                     downloaded_images,
-                    payload.text_scene_1,
-                    payload.text_scene_2,
-                    payload.video_title,
-                    payload.bg_music,
+                    render_data["text_scene_1"],
+                    render_data["text_scene_2"],
+                    render_data["video_title"],
+                    render_data["bg_music"],
                     output_video,
+                    render_data["style"],
+                    render_data["debug_mode"],
                 )
             except RenderError as exc:
                 if "timeout" in str(exc).lower():
                     raise HTTPException(status_code=504, detail=str(exc)) from exc
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-            download_name = safe_output_filename(payload.video_title)
+            download_name = safe_output_filename(render_data["video_title"])
             background_tasks.add_task(output_video.unlink, missing_ok=True)
             return FileResponse(
                 path=str(output_video),

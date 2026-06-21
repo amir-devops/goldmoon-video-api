@@ -7,3 +7,7 @@ venv/
 sounds/*.mp3
 assets/*.mp3
 assets/logo.png
+images/
+images-web/
+sanity/node_modules/
+sanity/dist/
