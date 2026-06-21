@@ -12,8 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
+COPY render_pipeline.py .
 COPY sanity_client.py .
-COPY presets.json .
 COPY assets/ ./assets/
 COPY sounds/ ./sounds/
 
