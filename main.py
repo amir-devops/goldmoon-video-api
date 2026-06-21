@@ -61,9 +61,9 @@ SCENE_LINE_SPACING = 85
 TEXT_FADE_DELAY = 0.3
 TEXT_FADE_DURATION = 0.5
 
-OUTRO_DURATION = 3.0
+OUTRO_DURATION = 2.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
-WEBSITE_URL = "WWW.GOLDMOONEGYPT.COM"
+DEFAULT_WEBSITE_URL = "https://www.goldmoontours.com/en"
 OUTRO_URL_FADE_DELAY = 0.4
 OUTRO_URL_FADE_DURATION = 0.5
 
@@ -108,6 +108,15 @@ class VideoRequest(BaseModel):
     debug_mode: bool = Field(
         False,
         description="When true, renders a ~3 second preview instead of the full video.",
+    )
+    logo_url: HttpUrl | None = Field(
+        default=None,
+        description="Optional logo image URL for the outro. Falls back to the bundled logo.",
+    )
+    website_url: str = Field(
+        default=DEFAULT_WEBSITE_URL,
+        max_length=200,
+        description="Website URL displayed at the bottom of the outro.",
     )
 
     @model_validator(mode="after")
@@ -174,6 +183,8 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, str | list[str]]:
         "bg_music": bg_music,
         "style": style,
         "debug_mode": payload.debug_mode,
+        "logo_url": str(payload.logo_url) if payload.logo_url else None,
+        "website_url": payload.website_url.strip() or DEFAULT_WEBSITE_URL,
     }
 
 
@@ -315,6 +326,13 @@ def safe_output_filename(video_title: str) -> str:
     safe_title = sanitize_plain_text(video_title, max_chars=50)
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_title).strip("._")
     return f"{slug or 'goldmoon_promo'}.mp4"
+
+
+def format_outro_website_text(url: str) -> str:
+    """Strip protocol for a cleaner on-screen URL in the outro."""
+    text = url.strip()
+    text = re.sub(r"^https?://", "", text, flags=re.IGNORECASE)
+    return text.rstrip("/")
 
 
 def escape_drawtext(text: str) -> str:
@@ -516,6 +534,14 @@ def download_image(url: str, dest: Path) -> None:
     dest.write_bytes(img_bytes)
 
 
+def download_logo(url: str, dest: Path) -> None:
+    """Download a logo image, raising RenderError for CLI/off-thread callers."""
+    try:
+        download_image(url, dest)
+    except HTTPException as exc:
+        raise RenderError(str(exc.detail)) from exc
+
+
 def resolve_logo_path() -> Path | None:
     if LOGO_PATH.exists():
         return LOGO_PATH
@@ -525,14 +551,14 @@ def resolve_logo_path() -> Path | None:
 def build_outro_with_logo_filter(
     font_path: str,
     logo_input_idx: int,
-    website_url: str = WEBSITE_URL,
+    website_url: str = DEFAULT_WEBSITE_URL,
     duration_frames: int = OUTRO_FRAMES,
 ) -> str:
     """
     Build outro on a pure black canvas so the logo blends cleanly without a harsh box.
     """
     escaped_font = font_path.replace(":", "\\:")
-    clean_url = escape_drawtext(website_url.strip().upper())
+    clean_url = escape_drawtext(format_outro_website_text(website_url))
     outro_duration = duration_frames / FRAMERATE
 
     return (
@@ -548,20 +574,24 @@ def build_outro_with_logo_filter(
     )
 
 
-def build_outro_filter(font_path: str, duration_frames: int = OUTRO_FRAMES) -> str:
+def build_outro_filter(
+    font_path: str,
+    website_url: str = DEFAULT_WEBSITE_URL,
+    duration_frames: int = OUTRO_FRAMES,
+) -> str:
     """
     Fallback outro on black background when logo file is unavailable.
     """
     escaped_font = font_path.replace(":", "\\:")
     company_name = escape_drawtext("GOLDMOON")
-    website_url = escape_drawtext(WEBSITE_URL)
+    display_url = escape_drawtext(format_outro_website_text(website_url))
 
     return (
         f"drawtext=fontfile={escaped_font}:text='{company_name}':"
         f"fontcolor=gold:fontsize=72:box=0:"
         f"x=(w-text_w)/2:y=(h-text_h)/2-60:"
         f"borderw=2:bordercolor=black,"
-        f"drawtext=fontfile={escaped_font}:text='{website_url}':"
+        f"drawtext=fontfile={escaped_font}:text='{display_url}':"
         f"fontcolor=white:fontsize=38:box=0:"
         f"x=(w-text_w)/2:y=(h-text_h)/2+40:"
         f"borderw=1:bordercolor=black,"
@@ -577,6 +607,7 @@ def build_filter_complex(
     music_path: Path | None,
     logo_path: Path | None,
     preset: dict[str, Any],
+    website_url: str = DEFAULT_WEBSITE_URL,
     debug_mode: bool = False,
 ) -> tuple[str, list[str], list[str], float]:
     scene_texts = assign_scene_texts(num_images, text_scene_1, text_scene_2)
@@ -606,7 +637,7 @@ def build_filter_complex(
     if logo_path:
         outro_filters = (
             build_outro_with_logo_filter(
-                font_path, num_images, WEBSITE_URL, outro_frames
+                font_path, num_images, website_url, outro_frames
             )
             + ";"
             + f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
@@ -615,7 +646,7 @@ def build_filter_complex(
         outro_input = ["-i", str(logo_path)]
     else:
         outro_filters = (
-            f"[{outro_bg_idx}:v]{build_outro_filter(font_path, outro_frames)}[v_outro];"
+            f"[{outro_bg_idx}:v]{build_outro_filter(font_path, website_url, outro_frames)}[v_outro];"
             f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
             f"offset={outro_offset}[v_final];"
         )
@@ -665,6 +696,8 @@ def execute_render(
     output_path: Path | None = None,
     style: str = DEFAULT_STYLE,
     debug_mode: bool = False,
+    logo_path: Path | None = None,
+    website_url: str = DEFAULT_WEBSITE_URL,
 ) -> Path:
     if len(image_paths) < 2 or len(image_paths) > 4:
         raise RenderError("Please provide 2 to 4 images.")
@@ -684,7 +717,7 @@ def execute_render(
         raise RenderError(str(exc.detail)) from exc
 
     music_path = resolve_bg_music(bg_music)
-    logo_path = resolve_logo_path()
+    effective_logo = logo_path if logo_path and logo_path.exists() else resolve_logo_path()
     num_images = len(image_paths)
 
     filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
@@ -693,8 +726,9 @@ def execute_render(
         scene_1,
         scene_2,
         music_path,
-        logo_path,
+        effective_logo,
         preset,
+        website_url=website_url,
         debug_mode=debug_mode,
     )
 
@@ -803,6 +837,20 @@ def run_n8n_cli() -> None:
     output_path = Path.cwd() / f"output_{Path(output_name).stem}.mp4"
     style = os.getenv("STYLE", DEFAULT_STYLE).strip().lower().replace("-", "_")
     debug_mode = os.getenv("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes"}
+    website_url = os.getenv("WEBSITE_URL", DEFAULT_WEBSITE_URL).strip() or DEFAULT_WEBSITE_URL
+    logo_url = os.getenv("LOGO_URL", "").strip()
+    downloaded_logo: Path | None = None
+
+    if logo_url:
+        if not is_url_safe(logo_url):
+            print("Error: Unsafe LOGO_URL.")
+            sys.exit(1)
+        downloaded_logo = Path.cwd() / f"logo_{uuid.uuid4().hex}.png"
+        try:
+            download_logo(logo_url, downloaded_logo)
+        except RenderError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
     try:
         result = execute_render(
@@ -814,10 +862,15 @@ def run_n8n_cli() -> None:
             output_path=output_path,
             style=style,
             debug_mode=debug_mode,
+            logo_path=downloaded_logo,
+            website_url=website_url,
         )
     except RenderError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    finally:
+        if downloaded_logo:
+            downloaded_logo.unlink(missing_ok=True)
 
     print(f"Success: {result}")
 
@@ -850,6 +903,8 @@ def health_check() -> dict:
         "preset_count": len(preset_names),
         "presets": preset_names,
         "default_style": DEFAULT_STYLE,
+        "default_website_url": DEFAULT_WEBSITE_URL,
+        "outro_duration_seconds": OUTRO_DURATION,
         "sanity_project_id": SANITY_PROJECT_ID,
         "sanity_dataset": SANITY_DATASET,
     }
@@ -899,10 +954,26 @@ async def render_video(
     async with render_semaphore:
         job_id = uuid.uuid4().hex
         downloaded_images: list[Path] = []
+        downloaded_logo: Path | None = None
         output_video = APP_DIR / f"video_{job_id}.mp4"
 
         try:
             render_data = resolve_render_request(payload)
+
+            logo_url = render_data.get("logo_url")
+            if logo_url:
+                if not is_url_safe(logo_url):
+                    raise HTTPException(status_code=400, detail="Unsafe logo_url")
+                downloaded_logo = APP_DIR / f"logo_{job_id}.png"
+                try:
+                    download_image(logo_url, downloaded_logo)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Failed to download logo_url",
+                    ) from exc
 
             for idx, url in enumerate(render_data["image_urls"]):
                 if not is_url_safe(url):
@@ -939,6 +1010,8 @@ async def render_video(
                     output_video,
                     render_data["style"],
                     render_data["debug_mode"],
+                    downloaded_logo,
+                    render_data["website_url"],
                 )
             except RenderError as exc:
                 if "timeout" in str(exc).lower():
@@ -955,6 +1028,8 @@ async def render_video(
         finally:
             for img_path in downloaded_images:
                 img_path.unlink(missing_ok=True)
+            if downloaded_logo:
+                downloaded_logo.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
