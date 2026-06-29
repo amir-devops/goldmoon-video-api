@@ -29,8 +29,10 @@ from render_pipeline import (
     OSWALD_FONT,
     OUTRO_DURATION,
     RenderError,
+    assign_scene_texts,
     load_presets,
     render_video,
+    require_english_text,
     safe_output_filename,
 )
 from sanity_client import (
@@ -51,7 +53,6 @@ render_semaphore = asyncio.Semaphore(1)
 
 class Scene(BaseModel):
     image_url: HttpUrl
-    text: str = Field(..., max_length=60)
 
 
 class VideoRequest(BaseModel):
@@ -66,23 +67,30 @@ class VideoRequest(BaseModel):
     )
     website_url: str = Field(
         default=DEFAULT_WEBSITE_URL,
-        max_length=200,
+        max_length=100,
         description="Website URL displayed at the bottom of the outro.",
     )
     scenes: list[Scene] = Field(
         ...,
         min_length=2,
         max_length=4,
-        description="2-4 scenes, each with an image URL and overlay text.",
+        description="2-4 scenes, each with an image URL.",
+    )
+    scene_texts: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=4,
+        description=(
+            "2-4 overlay text strings mapped to scenes by index. "
+            "If fewer texts than scenes, the last text repeats for remaining scenes."
+        ),
     )
 
 
 def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
     return {
-        "scenes": [
-            {"image_url": str(scene.image_url), "text": scene.text}
-            for scene in payload.scenes
-        ],
+        "image_urls": [str(scene.image_url) for scene in payload.scenes],
+        "scene_texts": list(payload.scene_texts),
         "style": payload.style or "",
         "logo_url": str(payload.logo_url) if payload.logo_url else None,
         "website_url": payload.website_url.strip() or DEFAULT_WEBSITE_URL,
@@ -151,44 +159,65 @@ def download_logo(url: str, dest: Path) -> None:
 
 def run_n8n_cli() -> None:
     """
-    CLI entry for n8n Execute Command:
-    python main.py <img1> <img2> [img3] [img4] <text1> <text2> <video_title> [bg_music]
+    CLI entry for n8n Execute Command nodes.
+
+    Usage:
+        python main.py --images <img1> <img2> [img3] [img4] \\
+                       --texts  <text1> <text2> [text3] [text4] \\
+                       --title  <video_title> \\
+                       [--music desert_ambient|luxury_chill|cinematic_epic]
+
+    Environment overrides (optional):
+        STYLE, DEBUG_MODE, WEBSITE_URL, LOGO_URL
     """
-    if len(sys.argv) < 6:
-        print("Error: Missing arguments from n8n!")
-        print(
-            "Expected: python main.py <img1> <img2> <text1> <text2> <video_title> [bg_music]"
-        )
-        print(
-            "Or: python main.py <img1> <img2> <img3> <text1> <text2> <video_title> [bg_music]"
-        )
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="goldmoon-render",
+        description="Goldmoon CLI video renderer for n8n Execute Command nodes",
+    )
+    parser.add_argument(
+        "--images",
+        nargs="+",
+        required=True,
+        metavar="PATH",
+        help="2-4 local image file paths",
+    )
+    parser.add_argument(
+        "--texts",
+        nargs="+",
+        required=True,
+        metavar="TEXT",
+        help="2-4 scene overlay texts (English only, max 60 chars each)",
+    )
+    parser.add_argument(
+        "--title",
+        required=True,
+        help="Output video title (used to name the output file)",
+    )
+    parser.add_argument(
+        "--music",
+        default="luxury_chill",
+        choices=["desert_ambient", "luxury_chill", "cinematic_epic"],
+        help="Background music track key (default: luxury_chill)",
+    )
+
+    args = parser.parse_args(sys.argv[1:])
+
+    if len(args.images) < 2 or len(args.images) > 4:
+        print("Error: Provide 2 to 4 image paths via --images.")
+        sys.exit(1)
+    if len(args.texts) < 2 or len(args.texts) > 4:
+        print("Error: Provide 2 to 4 scene texts via --texts.")
         sys.exit(1)
 
-    optional_music = sys.argv[-1]
-    known_music = {"desert_ambient", "luxury_chill", "cinematic_epic"}
-    if optional_music in known_music:
-        bg_music = optional_music
-        argv = sys.argv[1:-1]
-    else:
-        bg_music = "luxury_chill"
-        argv = sys.argv[1:]
+    for idx, text in enumerate(args.texts):
+        try:
+            require_english_text(text, f"--texts[{idx}]")
+        except RenderError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
-    if len(argv) < 5:
-        print("Error: Missing text or video title arguments.")
-        sys.exit(1)
-
-    video_title = argv[-1]
-    text_scene_2 = argv[-2]
-    text_scene_1 = argv[-3]
-    image_args = argv[:-3]
-
-    if len(image_args) < 2 or len(image_args) > 4:
-        print("Error: Provide 2 to 4 image paths.")
-        sys.exit(1)
-
-    image_paths = [Path(arg).resolve() for arg in image_args]
-    output_name = safe_output_filename(video_title)
-    output_path = Path.cwd() / f"output_{Path(output_name).stem}.mp4"
     style = os.getenv("STYLE", "").strip()
     debug_mode = os.getenv("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes"}
     website_url = os.getenv("WEBSITE_URL", DEFAULT_WEBSITE_URL).strip() or DEFAULT_WEBSITE_URL
@@ -206,20 +235,21 @@ def run_n8n_cli() -> None:
             print(f"Error: {exc}")
             sys.exit(1)
 
-    try:
-        scenes = []
-        split_at = len(image_args) // 2
-        for index, image_path in enumerate(image_paths):
-            text = text_scene_1 if index < split_at else text_scene_2
-            scenes.append({"image_path": image_path, "text": text})
+    image_paths = [Path(arg).resolve() for arg in args.images]
+    output_name = safe_output_filename(args.title)
+    output_path = Path.cwd() / f"output_{Path(output_name).stem}.mp4"
 
+    try:
         result = render_video(
             {
-                "scenes": scenes,
+                "image_paths": image_paths,
+                "scene_texts": args.texts,
                 "output_path": output_path,
                 "style": style,
                 "logo_path": downloaded_logo,
                 "website_url": website_url,
+                "bg_music": args.music,
+                "debug_mode": debug_mode,
             }
         )
     except RenderError as exc:
@@ -318,6 +348,13 @@ async def render_video_endpoint(
         try:
             render_data = resolve_render_request(payload)
 
+            # Validate all texts early, before any expensive I/O
+            for idx, text in enumerate(render_data["scene_texts"]):
+                try:
+                    require_english_text(text, f"scene_texts[{idx}]")
+                except RenderError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
             logo_url = render_data.get("logo_url")
             if logo_url:
                 if not is_url_safe(logo_url):
@@ -333,8 +370,7 @@ async def render_video_endpoint(
                         detail="Failed to download logo_url",
                     ) from exc
 
-            for idx, scene in enumerate(render_data["scenes"]):
-                url = scene["image_url"]
+            for idx, url in enumerate(render_data["image_urls"]):
                 if not is_url_safe(url):
                     raise HTTPException(
                         status_code=400,
@@ -352,16 +388,12 @@ async def render_video_endpoint(
                     ) from exc
                 downloaded_images.append(img_path)
 
-            pipeline_scenes = [
-                {"image_path": downloaded_images[idx], "text": scene["text"]}
-                for idx, scene in enumerate(render_data["scenes"])
-            ]
-
             try:
                 await asyncio.to_thread(
                     render_video,
                     {
-                        "scenes": pipeline_scenes,
+                        "image_paths": downloaded_images,
+                        "scene_texts": render_data["scene_texts"],
                         "output_path": output_video,
                         "style": render_data["style"],
                         "logo_path": downloaded_logo,

@@ -258,6 +258,19 @@ def split_scene_lines(text: str, max_lines: int = 2) -> list[str]:
     return textwrap.wrap(plain_text, width=WRAP_CHARS)[:max_lines]
 
 
+def assign_scene_texts(num_images: int, scene_texts: list[str]) -> list[list[str]]:
+    """Map each image index to its scene text and split into drawtext lines.
+
+    If scene_texts has fewer entries than num_images, the last text is reused
+    for all remaining images rather than raising an error.
+    """
+    result: list[list[str]] = []
+    for i in range(num_images):
+        raw = scene_texts[i] if i < len(scene_texts) else scene_texts[-1]
+        result.append(split_scene_lines(raw))
+    return result
+
+
 def build_drawtext_filters(
     font_path: str,
     text_lines: list[str],
@@ -551,16 +564,26 @@ def render_video(data: dict[str, Any]) -> Path:
     Modular render entry point.
 
     Expected keys:
-      scenes: list[{"image_path": Path|str, "text": str}] (2-4 items)
+      image_paths: list[Path|str]  (2-4 items)
+      scene_texts: list[str]       (2-4 items; if fewer than images, last text repeats)
     Optional:
       bg_music, style, debug_mode, logo_path, website_url, output_path
     """
-    raw_scenes = data["scenes"]
-    if len(raw_scenes) < 2 or len(raw_scenes) > 4:
-        raise RenderError("Please provide 2 to 4 scenes.")
+    raw_image_paths = data["image_paths"]
+    raw_scene_texts = data["scene_texts"]
 
-    image_paths = [Path(scene["image_path"]) for scene in raw_scenes]
-    scene_texts = build_per_scene_texts([scene["text"] for scene in raw_scenes])
+    if len(raw_image_paths) < 2 or len(raw_image_paths) > 4:
+        raise RenderError("Please provide 2 to 4 image paths.")
+    if len(raw_scene_texts) < 2 or len(raw_scene_texts) > 4:
+        raise RenderError("Please provide 2 to 4 scene texts.")
+
+    image_paths = [Path(p) for p in raw_image_paths]
+
+    validated_texts = [
+        require_english_text(text, f"scene_texts[{idx}]")
+        for idx, text in enumerate(raw_scene_texts)
+    ]
+    scene_text_lines = assign_scene_texts(len(image_paths), validated_texts)
 
     bg_music = data.get("bg_music", "luxury_chill")
     debug_mode = bool(data.get("debug_mode", False))
@@ -581,7 +604,7 @@ def render_video(data: dict[str, Any]) -> Path:
     filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
         num_images,
         font_path,
-        scene_texts,
+        scene_text_lines,
         music_path,
         effective_logo,
         preset,
