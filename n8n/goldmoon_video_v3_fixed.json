@@ -38,7 +38,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"query\": \"*[_type == \\\"tour\\\" && !defined(video_processed)] | order(_createdAt asc)[0]{_id, title, category, \\\"images\\\": images[].asset->url, text_scene_1, text_scene_2}\"\n}",
+        "jsonBody": "{\n  \"query\": \"*[_type == \\\"tour\\\" && !defined(video_processed)] | order(_createdAt asc)[0]{_id, title, category, transition, text_animation, \\\"images\\\": images[].asset->url, text_scene_1, text_scene_2}\"\n}",
         "options": {}
       },
       "id": "dfa61d30-ef7e-4740-b745-61de0a10d2e9",
@@ -46,7 +46,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [320, 416],
-      "notes": "GROQ now ends with [0] so exactly one tour (or null) comes back per execution -> guarantees one video per run. Projection now includes `category`, used downstream to pick a fitting style."
+      "notes": "GROQ now ends with [0] so exactly one tour (or null) comes back per execution -> guarantees one video per run. Projection now includes `category` (drives style selection) and optional manual `transition`/`text_animation` overrides."
     },
     {
       "parameters": {
@@ -129,7 +129,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nif (images.length < 2) {\n  throw new Error(`Tour ${tour._id} has fewer than 2 images; cannot render.`);\n}\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\n// Category -> style pool. Each category maps to 2 fitting presets (not a\n// single hardcoded one) so relevance is respected without losing per-render\n// variety. Unknown/missing category = no style set = the API's own\n// random.choice across all 10 presets kicks in, same as before.\nconst CATEGORY_STYLES = {\n  nile_cruise: ['luxury_gold', 'golden_hour'],\n  desert_safari: ['desert_safari', 'vintage_film'],\n  ancient_historical: ['vintage_film', 'editorial_mono'],\n  beach_red_sea: ['dreamy_soft', 'night_chill'],\n  city_cultural: ['modern_vibe', 'minimal_clean'],\n  luxury_vip: ['luxury_gold', 'cinematic_dark'],\n  adventure: ['desert_safari', 'modern_vibe'],\n};\n\nfunction pickStyleForCategory(category) {\n  const pool = CATEGORY_STYLES[String(category || '').trim().toLowerCase()];\n  if (!pool || pool.length === 0) return undefined;\n  return pool[Math.floor(Math.random() * pool.length)];\n}\n\nreturn [{\n  json: {\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n    style: pickStyleForCategory(tour.category),\n\n    // transition / text_animation deliberately omitted: the API picks a\n    // random one of each when absent, so cuts and text entrances still\n    // vary render to render even though style is now category-aware.\n  },\n}];"
+        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nif (images.length < 2) {\n  throw new Error(`Tour ${tour._id} has fewer than 2 images; cannot render.`);\n}\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\n// Category -> style pool. Each category maps to 2 fitting presets (not a\n// single hardcoded one) so relevance is respected without losing per-render\n// variety. Unknown/missing category = no style set = the API's own\n// random.choice across all 10 presets kicks in, same as before.\nconst CATEGORY_STYLES = {\n  nile_cruise: ['luxury_gold', 'golden_hour'],\n  desert_safari: ['desert_safari', 'vintage_film'],\n  ancient_historical: ['vintage_film', 'editorial_mono'],\n  beach_red_sea: ['dreamy_soft', 'night_chill'],\n  city_cultural: ['modern_vibe', 'minimal_clean'],\n  luxury_vip: ['luxury_gold', 'cinematic_dark'],\n  adventure: ['desert_safari', 'modern_vibe'],\n};\n\nfunction pickStyleForCategory(category) {\n  const pool = CATEGORY_STYLES[String(category || '').trim().toLowerCase()];\n  if (!pool || pool.length === 0) return undefined;\n  return pool[Math.floor(Math.random() * pool.length)];\n}\n\n// Manual per-tour overrides from Sanity. Left undefined when blank so the\n// API's own random.choice still applies -- these are opt-in, not required.\nconst manualTransition = String(tour.transition || '').trim().toLowerCase() || undefined;\nconst manualTextAnimation = String(tour.text_animation || '').trim().toLowerCase() || undefined;\n\nreturn [{\n  json: {\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n    style: pickStyleForCategory(tour.category),\n    transition: manualTransition,\n    text_animation: manualTextAnimation,\n  },\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -137,7 +137,7 @@
       "id": "f17769f3-42af-4178-81d0-f19eaa02be77",
       "name": "Build Render Payload",
       "alwaysOutputData": true,
-      "notes": "Outputs {scenes, scene_texts, bg_music, website_url, style} matching VideoRequest in main.py. `style` is now chosen from a small category-appropriate pool (CATEGORY_STYLES) based on the tour's Sanity `category` field; if category is missing/unrecognized, style is left undefined so the API's own random.choice across all 10 presets applies, same as before. transition/text_animation stay omitted for full randomness."
+      "notes": "Outputs {scenes, scene_texts, bg_music, website_url, style, transition, text_animation} matching VideoRequest in main.py. `style` is chosen from a category-appropriate pool (CATEGORY_STYLES) based on the tour's Sanity `category` field, falling back to undefined (API random.choice) when category is missing/unrecognized. `transition`/`text_animation` are optional manual overrides pulled straight from the tour document; left undefined when blank so the API still randomizes them by default."
     },
     {
       "parameters": {
@@ -154,7 +154,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { scenes: $json.scenes, scene_texts: $json.scene_texts, bg_music: $json.bg_music, website_url: $json.website_url, style: $json.style } }}",
+        "jsonBody": "={{ { scenes: $json.scenes, scene_texts: $json.scene_texts, bg_music: $json.bg_music, website_url: $json.website_url, style: $json.style, transition: $json.transition, text_animation: $json.text_animation } }}",
         "options": {
           "response": {
             "response": {
@@ -173,7 +173,7 @@
       "alwaysOutputData": false,
       "retryOnFail": false,
       "waitBetweenTries": 5000,
-      "notes": "Response is the raw MP4 (binary property 'data'), not JSON. There is no video_url on this node's output - that's why the next node uploads the binary to Sanity to obtain a real URL. `style` is now forwarded from Build Render Payload; when it's undefined (unmapped category) JSON.stringify drops the key and the API falls back to its own random style pick."
+      "notes": "Response is the raw MP4 (binary property 'data'), not JSON. There is no video_url on this node's output - that's why the next node uploads the binary to Sanity to obtain a real URL. `style`/`transition`/`text_animation` are forwarded from Build Render Payload; any left undefined get dropped by JSON.stringify so the API falls back to its own random picks."
     },
     {
       "parameters": {
