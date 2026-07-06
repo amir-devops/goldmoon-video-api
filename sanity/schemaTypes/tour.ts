@@ -86,6 +86,13 @@ export const tour = defineType({
       },
       initialValue: 'desert_safari',
     }),
+    defineField({
+      name: 'video_processed',
+      title: 'Video Processed',
+      type: 'boolean',
+      description: 'Check this if a promotional video has already been generated for this tour.',
+      initialValue: false,
+    }),
   ],
   preview: {
     select: {

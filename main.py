@@ -29,8 +29,12 @@ from render_pipeline import (
     OSWALD_FONT,
     OUTRO_DURATION,
     RenderError,
+    TEXT_ANIMATIONS,
+    TRANSITION_POOL,
     assign_scene_texts,
     load_presets,
+    pick_text_animation,
+    pick_transition,
     render_video,
     require_english_text,
     safe_output_filename,
@@ -85,6 +89,30 @@ class VideoRequest(BaseModel):
             "If fewer texts than scenes, the last text repeats for remaining scenes."
         ),
     )
+    transition: str | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Optional scene-to-scene transition (see /presets for the full list). "
+            "Omit for a randomly chosen transition so each render looks distinct."
+        ),
+    )
+    text_animation: str | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Optional text entrance animation: fade, slide_up, slide_down, or "
+            "rise_fade. Omit for a randomly chosen animation each render."
+        ),
+    )
+    bg_music: str | None = Field(
+        default=None,
+        max_length=40,
+        description=(
+            "Optional background music key: desert_ambient, luxury_chill, or "
+            "cinematic_epic. Omit to use the default (luxury_chill)."
+        ),
+    )
 
 
 def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
@@ -94,6 +122,9 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "style": payload.style or "",
         "logo_url": str(payload.logo_url) if payload.logo_url else None,
         "website_url": payload.website_url.strip() or DEFAULT_WEBSITE_URL,
+        "transition": (payload.transition or "").strip().lower() or None,
+        "text_animation": (payload.text_animation or "").strip().lower() or None,
+        "bg_music": (payload.bg_music or "").strip().lower() or None,
     }
 
 
@@ -201,6 +232,18 @@ def run_n8n_cli() -> None:
         choices=["desert_ambient", "luxury_chill", "cinematic_epic"],
         help="Background music track key (default: luxury_chill)",
     )
+    parser.add_argument(
+        "--transition",
+        default=None,
+        choices=TRANSITION_POOL,
+        help="Scene transition style. Omit for a random one each run.",
+    )
+    parser.add_argument(
+        "--text-animation",
+        default=None,
+        choices=TEXT_ANIMATIONS,
+        help="Text entrance animation. Omit for a random one each run.",
+    )
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -250,6 +293,8 @@ def run_n8n_cli() -> None:
                 "website_url": website_url,
                 "bg_music": args.music,
                 "debug_mode": debug_mode,
+                "transition": args.transition,
+                "text_animation": args.text_animation,
             }
         )
     except RenderError as exc:
@@ -311,6 +356,8 @@ def list_presets(_auth: str = Depends(verify_api_key)) -> dict:
             }
             for key, value in presets.items()
         },
+        "transitions": TRANSITION_POOL,
+        "text_animations": TEXT_ANIMATIONS,
     }
 
 
@@ -352,6 +399,19 @@ async def render_video_endpoint(
             for idx, text in enumerate(render_data["scene_texts"]):
                 try:
                     require_english_text(text, f"scene_texts[{idx}]")
+                except RenderError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            # Validate optional transition/animation overrides early too.
+            # (Only when explicitly provided; None means "pick randomly later".)
+            if render_data.get("transition"):
+                try:
+                    pick_transition(render_data["transition"])
+                except RenderError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if render_data.get("text_animation"):
+                try:
+                    pick_text_animation(render_data["text_animation"])
                 except RenderError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -398,6 +458,9 @@ async def render_video_endpoint(
                         "style": render_data["style"],
                         "logo_path": downloaded_logo,
                         "website_url": render_data["website_url"],
+                        "transition": render_data.get("transition"),
+                        "text_animation": render_data.get("text_animation"),
+                        "bg_music": render_data.get("bg_music") or "luxury_chill",
                     },
                 )
             except RenderError as exc:

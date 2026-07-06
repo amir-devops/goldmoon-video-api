@@ -70,6 +70,40 @@ BG_MUSIC_ALIASES = {
     "cinematic_epic": "samuelfjohanns-cinematic-duduk-192901.mp3",
 }
 
+# Curated FFmpeg xfade transitions. One is chosen per render (not per cut) so a
+# single video keeps a consistent, professional transition language while
+# successive renders still look distinct from one another.
+TRANSITION_POOL = [
+    "fade",
+    "fadeblack",
+    "fadewhite",
+    "dissolve",
+    "wipeleft",
+    "wiperight",
+    "wipeup",
+    "wipedown",
+    "slideleft",
+    "slideright",
+    "slideup",
+    "slidedown",
+    "smoothleft",
+    "smoothright",
+    "smoothup",
+    "smoothdown",
+    "circleopen",
+    "circleclose",
+    "radial",
+    "diagtl",
+    "diagbr",
+]
+
+# Text overlay entrance animations. Chosen once per render (all scene texts in
+# a video share it) for a coherent look; timing still comes from each preset's
+# fade_delay/fade_duration.
+TEXT_ANIMATIONS = ["fade", "slide_up", "slide_down", "rise_fade"]
+TEXT_SLIDE_DISTANCE = 46.0
+TEXT_SLIDE_DISTANCE_SUBTLE = 20.0
+
 _preset_cache: dict[str, Any] | None = None
 
 
@@ -113,6 +147,40 @@ def resolve_preset(style_name: str = "") -> tuple[str, dict[str, Any]]:
 
 def list_preset_names() -> list[str]:
     return sorted(load_presets())
+
+
+def pick_transition(requested: str | None = None) -> str:
+    """Resolve the scene-to-scene transition for a render.
+
+    An explicit, valid value is honored; otherwise one is chosen at random
+    from TRANSITION_POOL so every render feels distinct by default.
+    """
+    if requested:
+        normalized = normalize_style_name(requested)
+        if normalized not in TRANSITION_POOL:
+            raise RenderError(
+                f"Unknown transition '{requested}'. Choose one of: "
+                f"{', '.join(TRANSITION_POOL)}"
+            )
+        return normalized
+    return random.choice(TRANSITION_POOL)
+
+
+def pick_text_animation(requested: str | None = None) -> str:
+    """Resolve the text entrance animation for a render.
+
+    An explicit, valid value is honored; otherwise one is chosen at random
+    from TEXT_ANIMATIONS so every render feels distinct by default.
+    """
+    if requested:
+        normalized = normalize_style_name(requested)
+        if normalized not in TEXT_ANIMATIONS:
+            raise RenderError(
+                f"Unknown text animation '{requested}'. Choose one of: "
+                f"{', '.join(TEXT_ANIMATIONS)}"
+            )
+        return normalized
+    return random.choice(TEXT_ANIMATIONS)
 
 
 def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
@@ -271,10 +339,41 @@ def assign_scene_texts(num_images: int, scene_texts: list[str]) -> list[list[str
     return result
 
 
+def build_text_offset_expr(
+    animation: str, fade_delay: float, fade_duration: float
+) -> str | None:
+    """Return a time-based y-offset expression for the given text animation.
+
+    The offset starts non-zero and eases to 0 over [fade_delay, fade_delay +
+    fade_duration], so the text visually settles into its resting position at
+    the same moment the alpha fade completes. Returns None for plain "fade"
+    (no positional movement).
+    """
+    if animation == "slide_up":
+        dist = TEXT_SLIDE_DISTANCE
+    elif animation == "rise_fade":
+        dist = TEXT_SLIDE_DISTANCE_SUBTLE
+    elif animation == "slide_down":
+        dist = -TEXT_SLIDE_DISTANCE
+    else:
+        return None
+
+    if dist >= 0:
+        return (
+            f"if(lt(t\\,{fade_delay})\\,{dist}\\,"
+            f"max(0\\,{dist}*(1-(t-{fade_delay})/{fade_duration})))"
+        )
+    return (
+        f"if(lt(t\\,{fade_delay})\\,{dist}\\,"
+        f"min(0\\,{dist}*(1-(t-{fade_delay})/{fade_duration})))"
+    )
+
+
 def build_drawtext_filters(
     font_path: str,
     text_lines: list[str],
     text_preset: dict[str, Any],
+    animation: str = "fade",
 ) -> list[str]:
     escaped_font = font_path.replace(":", "\\:")
     text_filters: list[str] = []
@@ -284,6 +383,7 @@ def build_drawtext_filters(
     fade_duration = float(text_preset.get("fade_duration", TEXT_FADE_DURATION))
     uppercase = bool(text_preset.get("uppercase", True))
     text_y = text_preset.get("text_y", SCENE_TEXT_START_Y)
+    offset_expr = build_text_offset_expr(animation, fade_delay, fade_duration)
 
     for index, line in enumerate(text_lines):
         display_line = line.strip()
@@ -295,6 +395,9 @@ def build_drawtext_filters(
             y_position = f"(h-text_h)/2+({index}*{line_spacing})"
         else:
             y_position = f"{text_y}+({index}*{line_spacing})"
+
+        if offset_expr:
+            y_position = f"({y_position})+({offset_expr})"
 
         parts = [
             f"drawtext=fontfile={escaped_font}",
@@ -348,6 +451,7 @@ def build_scene_vf_filter(
     text_lines: list[str],
     preset: dict[str, Any],
     duration_frames: int,
+    animation: str = "fade",
 ) -> str:
     """Build per-scene FFmpeg -vf chain from preset filter + movement."""
     zoom = preset.get("zoom", {})
@@ -368,7 +472,7 @@ def build_scene_vf_filter(
         return f"{base_filter},fps={FRAMERATE}"
 
     text_preset = preset.get("text", {})
-    text_filters = build_drawtext_filters(font_path, text_lines, text_preset)
+    text_filters = build_drawtext_filters(font_path, text_lines, text_preset, animation)
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
 
 
@@ -392,11 +496,15 @@ def build_scene_pipeline(
     img_duration: float,
     xfade_duration: float,
     duration_frames: int,
+    transition: str = "fade",
+    animation: str = "fade",
 ) -> tuple[str, float]:
     filter_parts: list[str] = []
 
     for i in range(num_images):
-        scene_filter = build_scene_vf_filter(font_path, scene_texts[i], preset, duration_frames)
+        scene_filter = build_scene_vf_filter(
+            font_path, scene_texts[i], preset, duration_frames, animation
+        )
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
     last_output = "[v_scene_0]"
@@ -404,7 +512,7 @@ def build_scene_pipeline(
     for i in range(1, num_images):
         next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
         filter_parts.append(
-            f"{last_output}[v_scene_{i}]xfade=transition=fade:duration={xfade_duration}:"
+            f"{last_output}[v_scene_{i}]xfade=transition={transition}:duration={xfade_duration}:"
             f"offset={current_offset}{next_label};"
         )
         last_output = next_label
@@ -467,6 +575,8 @@ def build_filter_complex(
     preset: dict[str, Any],
     website_url: str = DEFAULT_WEBSITE_URL,
     debug_mode: bool = False,
+    transition: str = "fade",
+    animation: str = "fade",
 ) -> tuple[str, list[str], list[str], float]:
     if not scene_texts or not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
@@ -484,6 +594,8 @@ def build_filter_complex(
         img_duration,
         xfade_duration,
         duration_frames,
+        transition,
+        animation,
     )
 
     outro_bg_idx = num_images
@@ -591,6 +703,8 @@ def render_video(data: dict[str, Any]) -> Path:
     website_url = data.get("website_url", DEFAULT_WEBSITE_URL)
     output_path = Path(data["output_path"]) if data.get("output_path") else None
     style_name = data.get("style", "")
+    transition = pick_transition(data.get("transition"))
+    text_animation = pick_text_animation(data.get("text_animation"))
 
     for image_path in image_paths:
         validate_local_image(image_path)
@@ -610,6 +724,8 @@ def render_video(data: dict[str, Any]) -> Path:
         preset,
         website_url=website_url,
         debug_mode=debug_mode,
+        transition=transition,
+        animation=text_animation,
     )
 
     if output_path is None:
@@ -655,5 +771,8 @@ def render_video(data: dict[str, Any]) -> Path:
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise RenderError("Video rendering failed.")
 
-    print(f"Render complete with style: {resolved_style}")
+    print(
+        f"Render complete with style={resolved_style}, "
+        f"transition={transition}, text_animation={text_animation}"
+    )
     return output_path

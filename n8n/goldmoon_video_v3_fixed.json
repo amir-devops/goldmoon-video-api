@@ -1,0 +1,272 @@
+{
+  "name": "goldmoon video v.3 (fixed)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "748d1872-e7be-4970-9a25-cbcdda4c2dc1",
+      "name": "When clicking 'Test workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [96, 416]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://5aj2yjpb.api.sanity.io/v2024-01-01/data/query/production",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SANITY_TOKEN_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"query\": \"*[_type == \\\"tour\\\" && !defined(video_processed)] | order(_createdAt asc)[0]{_id, title, \\\"images\\\": images[].asset->url, text_scene_1, text_scene_2}\"\n}",
+        "options": {}
+      },
+      "id": "dfa61d30-ef7e-4740-b745-61de0a10d2e9",
+      "name": "Fetch One Pending Tour",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [320, 416],
+      "notes": "GROQ now ends with [0] so exactly one tour (or null) comes back per execution -> guarantees one video per run."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1a1b2c3-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.result }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1a1b2c3-0000-4000-8000-000000000002",
+      "name": "Tour Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [544, 416],
+      "notes": "Stops the run cleanly when no unprocessed tours remain instead of erroring downstream."
+    },
+    {
+      "parameters": {},
+      "id": "c1a1b2c3-0000-4000-8000-000000000003",
+      "name": "No Tours Pending",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [768, 560]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tour: {{ $json.result.title }} (id: {{ $json.result._id }})\nExisting scene hints: {{ $json.result.text_scene_1 }} | {{ $json.result.text_scene_2 }}\n\nGenerate the marketing JSON for this tour following the schema and rules from the system message.",
+        "hasOutputParser": false,
+        "messages": {
+          "messageValues": [
+            {
+              "type": "=SystemMessagePromptTemplate",
+              "message": "=You are a luxury travel copywriter for \"Goldmoon Egypt Tours\". Write captivating, minimalist marketing copy for a 10-second vertical promotional video.\n\nSTRICT RULES:\n1. Each text_scene value: max 5 words, max 60 characters, English only (no Arabic or other scripts), no emojis.\n2. Output ONLY a single valid JSON object - no markdown, no code fences, no explanations.\n3. music_mood MUST be exactly one of: \"desert_ambient\", \"luxury_chill\", \"cinematic_epic\" (no other values).\n\nREQUIRED OUTPUT FORMAT:\n{\n  \"video_title\": \"short punchy title, max 60 chars\",\n  \"description\": \"1-2 sentence SEO description with a call to action\",\n  \"tags\": [\"Tag1\", \"Tag2\", \"Tag3\", \"Tag4\", \"Tag5\"],\n  \"text_scene_1\": \"...\",\n  \"text_scene_2\": \"...\",\n  \"text_scene_3\": \"...\",\n  \"text_scene_4\": \"...\",\n  \"music_mood\": \"desert_ambient|luxury_chill|cinematic_epic\"\n}"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [768, 300],
+      "id": "ad906d1b-d03b-4ad8-9b4d-16e699cd3dc7",
+      "name": "Basic LLM Chain",
+      "alwaysOutputData": false,
+      "notes": "Now runs on the single tour object from 'Fetch One Pending Tour' (via Tour Found? true branch), not on the raw multi-tour array. Schema unified with what 'Build Render Payload' actually reads (text_scene_1..4 + music_mood)."
+    },
+    {
+      "parameters": {
+        "model": "deepseek-v4-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [688, 100],
+      "id": "ebe22b1c-a0ad-446e-b79c-8f4d32a8bfd6",
+      "name": "DeepSeek Chat Model",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "8t1jvfEMHY1k3Qpd",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nif (images.length < 2) {\n  throw new Error(`Tour ${tour._id} has fewer than 2 images; cannot render.`);\n}\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\nreturn [{\n  json: {\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n\n    // style / transition / text_animation deliberately omitted:\n    // the API picks a random one of each when they're absent, so every\n    // render gets a different look automatically.\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [992, 300],
+      "id": "f17769f3-42af-4178-81d0-f19eaa02be77",
+      "name": "Build Render Payload",
+      "alwaysOutputData": true,
+      "notes": "Rewritten to output {scenes, scene_texts, bg_music, website_url} matching VideoRequest in main.py. The old version sent image_urls/text_scene_1..4/zoom_speed/transition_type, none of which match the API schema, so /render was returning 422."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://goldmoon-video-api-goldmoon-video-api.hf.space/render",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "GoldmoonSecret2026"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { scenes: $json.scenes, scene_texts: $json.scene_texts, bg_music: $json.bg_music, website_url: $json.website_url } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 900000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1216, 300],
+      "id": "bbb1d748-fdf6-4bfe-9e46-13afd87c1e37",
+      "name": "Render Video",
+      "executeOnce": false,
+      "alwaysOutputData": false,
+      "retryOnFail": false,
+      "waitBetweenTries": 5000,
+      "notes": "Response is the raw MP4 (binary property 'data'), not JSON. There is no video_url on this node's output - that's why the next node uploads the binary to Sanity to obtain a real URL."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://5aj2yjpb.api.sanity.io/v2024-01-01/assets/files/production?filename={{ $('Build Render Payload').item.json.tour_id }}.mp4",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SANITY_TOKEN_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "video/mp4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1440, 300],
+      "id": "c1a1b2c3-0000-4000-8000-000000000004",
+      "name": "Upload Video to Sanity",
+      "notes": "NEW node. Uploads the rendered MP4 binary to Sanity's file-asset endpoint so we get back a real hosted URL (document.url) to store on the tour. Without this step there is nothing to put in video_url."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://5aj2yjpb.api.sanity.io/v2024-01-01/data/mutate/production",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SANITY_TOKEN_HERE"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mutations\": [\n    {\n      \"patch\": {\n        \"id\": \"{{ $('Build Render Payload').item.json.tour_id }}\",\n        \"set\": {\n          \"video_url\": \"{{ $json.document.url }}\",\n          \"video_title\": \"{{ $('Build Render Payload').item.json.video_title }}\",\n          \"video_processed\": true\n        }\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1664, 300],
+      "id": "425d857d-19e6-4ff7-a06a-aa18679bd4d0",
+      "name": "Mark Tour Processed",
+      "notes": "video_url now comes from the Sanity upload response (document.url), not from Render Video's output (which never had a URL field)."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [[{ "node": "Fetch One Pending Tour", "type": "main", "index": 0 }]]
+    },
+    "Fetch One Pending Tour": {
+      "main": [[{ "node": "Tour Found?", "type": "main", "index": 0 }]]
+    },
+    "Tour Found?": {
+      "main": [
+        [{ "node": "Basic LLM Chain", "type": "main", "index": 0 }],
+        [{ "node": "No Tours Pending", "type": "main", "index": 0 }]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [[{ "node": "Build Render Payload", "type": "main", "index": 0 }]]
+    },
+    "DeepSeek Chat Model": {
+      "ai_languageModel": [[{ "node": "Basic LLM Chain", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Build Render Payload": {
+      "main": [[{ "node": "Render Video", "type": "main", "index": 0 }]]
+    },
+    "Render Video": {
+      "main": [[{ "node": "Upload Video to Sanity", "type": "main", "index": 0 }]]
+    },
+    "Upload Video to Sanity": {
+      "main": [[{ "node": "Mark Tour Processed", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "00000000-0000-4000-8000-000000000000",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "256747daed1822b8d585ede9200f443c41eb960a8e5bd9e8210104b59b488eaf"
+  },
+  "id": "kPIuf6BIRZVaCmF004uYS-v3",
+  "tags": []
+}

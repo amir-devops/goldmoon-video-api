@@ -172,5 +172,50 @@
       "fade_delay": 0.45,
       "fade_duration": 0.65
     }
+  },
+  "golden_hour": {
+    "display_name": "Golden Hour",
+    "filter": "curves=preset=increase_contrast,colorbalance=rs=0.15:gs=0.05:bs=-0.12,eq=saturation=1.35",
+    "zoom": {
+      "z": "min(zoom+0.0013,1.35)",
+      "x": "iw/2-(iw/zoom/2)",
+      "y": "ih/2-(ih/zoom/2)"
+    },
+    "text": {
+      "font": "classic",
+      "fontcolor": "0xFFF3D6",
+      "fontsize": 46,
+      "uppercase": true,
+      "box": 0,
+      "shadowcolor": "black@0.6",
+      "shadowx": 2,
+      "shadowy": 2,
+      "text_y": 1100,
+      "line_spacing": 85,
+      "fade_delay": 0.35,
+      "fade_duration": 0.6
+    }
+  },
+  "editorial_mono": {
+    "display_name": "Editorial Mono",
+    "filter": "hue=s=0,eq=contrast=1.15:brightness=0.02",
+    "zoom": {
+      "z": "min(zoom+0.0008,1.12)",
+      "x": "iw/2-(iw/zoom/2)",
+      "y": "ih/2-(ih/zoom/2)"
+    },
+    "text": {
+      "font": "thin",
+      "fontcolor": "white",
+      "fontsize": 40,
+      "uppercase": false,
+      "box": 0,
+      "borderw": 1,
+      "bordercolor": "black@0.5",
+      "text_y": 1120,
+      "line_spacing": 76,
+      "fade_delay": 0.4,
+      "fade_duration": 0.6
+    }
   }
 }

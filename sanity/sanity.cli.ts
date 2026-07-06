@@ -5,4 +5,5 @@ export default defineCliConfig({
     projectId: '5aj2yjpb',
     dataset: 'production',
   },
+  studioHost: 'goldmoon-egypt-tours',
 })
