@@ -1,5 +1,5 @@
 {
-  "name": "goldmoon video v.3 (fixed)",
+  "name": "goldmoon video v.4 (verified)",
   "nodes": [
     {
       "parameters": {
@@ -46,7 +46,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [320, 416],
-      "notes": "GROQ now ends with [0] so exactly one tour (or null) comes back per execution -> guarantees one video per run."
+      "notes": "GROQ ends with [0] so exactly one tour (or null) comes back per execution -> guarantees one video per run."
     },
     {
       "parameters": {
@@ -108,7 +108,7 @@
       "id": "ad906d1b-d03b-4ad8-9b4d-16e699cd3dc7",
       "name": "Basic LLM Chain",
       "alwaysOutputData": false,
-      "notes": "Now runs on the single tour object from 'Fetch One Pending Tour' (via Tour Found? true branch), not on the raw multi-tour array. Schema unified with what 'Build Render Payload' actually reads (text_scene_1..4 + music_mood)."
+      "notes": "Runs on the single tour object from 'Fetch One Pending Tour' (via Tour Found? true branch), not on a raw multi-tour array. Schema matches what 'Build Render Payload' reads (text_scene_1..4 + music_mood)."
     },
     {
       "parameters": {
@@ -129,7 +129,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nif (images.length < 2) {\n  throw new Error(`Tour ${tour._id} has fewer than 2 images; cannot render.`);\n}\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\nreturn [{\n  json: {\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n\n    // style / transition / text_animation deliberately omitted:\n    // the API picks a random one of each when they're absent, so every\n    // render gets a different look automatically.\n  },\n}];"
+        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\n\nif (images.length < 2) {\n  // Don't throw - that would red-X the whole execution. Flag it instead so\n  // the 'Ready To Render?' IF node can route it to a clean no-op.\n  return [{\n    json: {\n      skip: true,\n      reason: `Tour ${tour._id || 'unknown'} has fewer than 2 images; cannot render.`,\n      tour_id: tour._id || '',\n    },\n  }];\n}\n\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\nreturn [{\n  json: {\n    skip: false,\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n\n    // style / transition / text_animation deliberately omitted:\n    // the API picks a random one of each when they're absent, so every\n    // render gets a different look automatically.\n  },\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -137,7 +137,46 @@
       "id": "f17769f3-42af-4178-81d0-f19eaa02be77",
       "name": "Build Render Payload",
       "alwaysOutputData": true,
-      "notes": "Rewritten to output {scenes, scene_texts, bg_music, website_url} matching VideoRequest in main.py. The old version sent image_urls/text_scene_1..4/zoom_speed/transition_type, none of which match the API schema, so /render was returning 422."
+      "notes": "Outputs {scenes, scene_texts, bg_music, website_url} matching VideoRequest in main.py. Emits {skip:true} instead of throwing when a tour has fewer than 2 images."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1a1b2c3-0000-4000-8000-000000000005",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1a1b2c3-0000-4000-8000-000000000006",
+      "name": "Ready To Render?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1104, 300],
+      "notes": "True when the tour had enough images and a payload was built; false routes to a clean no-op instead of failing the render call."
+    },
+    {
+      "parameters": {},
+      "id": "c1a1b2c3-0000-4000-8000-000000000007",
+      "name": "Skipped - Not Enough Images",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1104, 460]
     },
     {
       "parameters": {
@@ -166,14 +205,14 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1216, 300],
+      "position": [1328, 300],
       "id": "bbb1d748-fdf6-4bfe-9e46-13afd87c1e37",
       "name": "Render Video",
       "executeOnce": false,
       "alwaysOutputData": false,
       "retryOnFail": false,
       "waitBetweenTries": 5000,
-      "notes": "Response is the raw MP4 (binary property 'data'), not JSON. There is no video_url on this node's output - that's why the next node uploads the binary to Sanity to obtain a real URL."
+      "notes": "Response is the raw MP4 (binary property 'data'), not JSON. There is no video_url on this node's output - the next node uploads the binary to Sanity to obtain a real URL."
     },
     {
       "parameters": {
@@ -201,10 +240,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1440, 300],
+      "position": [1552, 300],
       "id": "c1a1b2c3-0000-4000-8000-000000000004",
       "name": "Upload Video to Sanity",
-      "notes": "NEW node. Uploads the rendered MP4 binary to Sanity's file-asset endpoint so we get back a real hosted URL (document.url) to store on the tour. Without this step there is nothing to put in video_url."
+      "notes": "Uploads the rendered MP4 binary to Sanity's file-asset endpoint so we get back a real hosted URL (document.url) to store on the tour."
     },
     {
       "parameters": {
@@ -230,10 +269,10 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1664, 300],
+      "position": [1776, 300],
       "id": "425d857d-19e6-4ff7-a06a-aa18679bd4d0",
       "name": "Mark Tour Processed",
-      "notes": "video_url now comes from the Sanity upload response (document.url), not from Render Video's output (which never had a URL field)."
+      "notes": "video_url comes from the Sanity upload response (document.url), not from Render Video's output (which never had a URL field)."
     }
   ],
   "pinData": {},
@@ -257,7 +296,13 @@
       "ai_languageModel": [[{ "node": "Basic LLM Chain", "type": "ai_languageModel", "index": 0 }]]
     },
     "Build Render Payload": {
-      "main": [[{ "node": "Render Video", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Ready To Render?", "type": "main", "index": 0 }]]
+    },
+    "Ready To Render?": {
+      "main": [
+        [{ "node": "Render Video", "type": "main", "index": 0 }],
+        [{ "node": "Skipped - Not Enough Images", "type": "main", "index": 0 }]
+      ]
     },
     "Render Video": {
       "main": [[{ "node": "Upload Video to Sanity", "type": "main", "index": 0 }]]
@@ -272,11 +317,11 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "00000000-0000-4000-8000-000000000000",
+  "versionId": "00000000-0000-4000-8000-000000000001",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "256747daed1822b8d585ede9200f443c41eb960a8e5bd9e8210104b59b488eaf"
   },
-  "id": "kPIuf6BIRZVaCmF004uYS-v3",
+  "id": "kPIuf6BIRZVaCmF004uYS-v4",
   "tags": []
 }

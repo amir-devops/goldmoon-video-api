@@ -93,6 +93,20 @@ export const tour = defineType({
       description: 'Check this if a promotional video has already been generated for this tour.',
       initialValue: false,
     }),
+    defineField({
+      name: 'video_title',
+      title: 'Video Title',
+      type: 'string',
+      description: 'AI-generated title for the rendered promo video. Set automatically by the n8n workflow.',
+      readOnly: true,
+    }),
+    defineField({
+      name: 'video_url',
+      title: 'Video URL',
+      type: 'url',
+      description: 'Hosted URL of the rendered promo video. Set automatically by the n8n workflow.',
+      readOnly: true,
+    }),
   ],
   preview: {
     select: {
