@@ -39,6 +39,24 @@ export const tour = defineType({
       validation: (rule) => rule.min(2).max(12),
     }),
     defineField({
+      name: 'category',
+      title: 'Tour Category',
+      type: 'string',
+      description: 'Used by the n8n workflow to pick a fitting video style automatically.',
+      options: {
+        list: [
+          {title: 'Nile Cruise', value: 'nile_cruise'},
+          {title: 'Desert Safari', value: 'desert_safari'},
+          {title: 'Ancient & Historical', value: 'ancient_historical'},
+          {title: 'Beach & Red Sea', value: 'beach_red_sea'},
+          {title: 'City & Cultural', value: 'city_cultural'},
+          {title: 'Luxury & VIP', value: 'luxury_vip'},
+          {title: 'Adventure', value: 'adventure'},
+        ],
+        layout: 'dropdown',
+      },
+    }),
+    defineField({
       name: 'text_scene_1',
       title: 'Video Hook Text',
       type: 'string',
@@ -81,6 +99,8 @@ export const tour = defineType({
           {title: 'Desert Safari', value: 'desert_safari'},
           {title: 'Night Chill', value: 'night_chill'},
           {title: 'Dreamy Soft', value: 'dreamy_soft'},
+          {title: 'Golden Hour', value: 'golden_hour'},
+          {title: 'Editorial Mono', value: 'editorial_mono'},
         ],
         layout: 'dropdown',
       },
