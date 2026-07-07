@@ -1,6 +1,7 @@
 {
   "luxury_gold": {
     "display_name": "Luxury Gold",
+    "transition": "fade",
     "filter": "colorchannelmixer=rr=1:rg=0.5:rb=0:gr=0:gg=1:gb=0:br=0:bg=0:bb=1",
     "zoom": {
       "z": "min(zoom+0.0015,1.5)",
@@ -26,6 +27,7 @@
   },
   "modern_vibe": {
     "display_name": "Modern Vibe",
+    "transition": "wipeleft",
     "filter": "eq=saturation=1.5",
     "zoom": {
       "z": "min(zoom+0.002,2.0)",
@@ -49,6 +51,7 @@
   },
   "desert_safari": {
     "display_name": "Desert Safari",
+    "transition": "smoothright",
     "filter": "eq=saturation=1.8",
     "zoom": {
       "z": "min(zoom+0.001,1.8)",
@@ -71,6 +74,7 @@
   },
   "cinematic_dark": {
     "display_name": "Cinematic Dark",
+    "transition": "slideright",
     "filter": "curves=darker,eq=contrast=1.2:brightness=-0.05",
     "zoom": {
       "z": "min(zoom+0.0012,1.6)",
@@ -91,6 +95,7 @@
   },
   "minimal_clean": {
     "display_name": "Minimal Clean",
+    "transition": "dissolve",
     "filter": "hue=s=0.5,eq=contrast=1.05",
     "zoom": {
       "z": "1",
@@ -111,6 +116,7 @@
   },
   "vintage_film": {
     "display_name": "Vintage Film",
+    "transition": "fadeblack",
     "filter": "noise=alls=10:allf=t+u,vignette=angle=PI/4",
     "zoom": {
       "z": "1.1",
@@ -131,6 +137,7 @@
   },
   "night_chill": {
     "display_name": "Night Chill",
+    "transition": "circleopen",
     "filter": "colorchannelmixer=.2:.5:.8:0:.2:.5:.8:0:.2:.5:.8,eq=brightness=-0.08",
     "zoom": {
       "z": "1.12",
@@ -153,6 +160,7 @@
   },
   "dreamy_soft": {
     "display_name": "Dreamy Soft",
+    "transition": "fadewhite",
     "filter": "gblur=sigma=1,eq=saturation=1.1",
     "zoom": {
       "z": "min(zoom+0.002,1.3)",
@@ -175,6 +183,7 @@
   },
   "golden_hour": {
     "display_name": "Golden Hour",
+    "transition": "radial",
     "filter": "curves=preset=increase_contrast,colorbalance=rs=0.15:gs=0.05:bs=-0.12,eq=saturation=1.35",
     "zoom": {
       "z": "min(zoom+0.0013,1.35)",
@@ -198,6 +207,7 @@
   },
   "editorial_mono": {
     "display_name": "Editorial Mono",
+    "transition": "diagtl",
     "filter": "hue=s=0,eq=contrast=1.15:brightness=0.02",
     "zoom": {
       "z": "min(zoom+0.0008,1.12)",

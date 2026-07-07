@@ -159,11 +159,12 @@ def list_preset_names() -> list[str]:
     return sorted(load_presets())
 
 
-def pick_transition(requested: str | None = None) -> str:
+def pick_transition(requested: str | None = None, style_default: str | None = None) -> str:
     """Resolve the scene-to-scene transition for a render.
 
-    An explicit, valid value is honored; otherwise one is chosen at random
-    from TRANSITION_POOL so every render feels distinct by default.
+    Priority: an explicit, valid `requested` value > the active style
+    preset's own signature transition (`style_default`, from presets.json)
+    > a random pick from TRANSITION_POOL when neither is available.
     """
     if requested:
         normalized = normalize_style_name(requested)
@@ -173,6 +174,8 @@ def pick_transition(requested: str | None = None) -> str:
                 f"{', '.join(TRANSITION_POOL)}"
             )
         return normalized
+    if style_default and style_default in TRANSITION_POOL:
+        return style_default
     return random.choice(TRANSITION_POOL)
 
 
@@ -713,13 +716,13 @@ def render_video(data: dict[str, Any]) -> Path:
     website_url = data.get("website_url", DEFAULT_WEBSITE_URL)
     output_path = Path(data["output_path"]) if data.get("output_path") else None
     style_name = data.get("style", "")
-    transition = pick_transition(data.get("transition"))
     text_animation = pick_text_animation(data.get("text_animation"))
 
     for image_path in image_paths:
         validate_local_image(image_path)
 
     resolved_style, preset = resolve_preset(style_name)
+    transition = pick_transition(data.get("transition"), preset.get("transition"))
     font_path = resolve_font_for_preset(preset)
     music_path = resolve_bg_music(bg_music)
     effective_logo = logo_path if logo_path and logo_path.exists() else resolve_logo_path()
