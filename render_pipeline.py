@@ -147,17 +147,15 @@ def resolve_preset(style_name: str = "") -> tuple[str, dict[str, Any]]:
     presets = load_presets()
     key = normalize_style_name(style_name)
 
-    print("--- LOG START ---")
-    print(f"n8n sent: '{style_name}'")
-    print(f"Normalized key: '{key}'")
-    print(f"Presets available: {list(presets.keys())}")
+    if style_name and key not in presets:
+        raise RenderError(
+            f"Style '{style_name}' (normalized as '{key}') not found. "
+            f"Available styles are: {list(presets.keys())}"
+        )
 
     if not key or key not in presets:
-        print("ALERT: Match NOT found. Falling back to random choice.")
         key = random.choice(sorted(presets))
-    else:
-        print(f"SUCCESS: Match found for '{key}'")
-    print("--- LOG END ---")
+        print(f"No style specified. Randomly selected: {key}")
 
     return key, presets[key]
 

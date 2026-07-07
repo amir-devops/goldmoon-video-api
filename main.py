@@ -13,7 +13,7 @@ import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from render_pipeline import (
     APP_DIR,
@@ -75,20 +75,28 @@ class VideoRequest(BaseModel):
         description="Website URL displayed at the bottom of the outro.",
     )
     scenes: list[Scene] = Field(
-        ...,
-        min_length=2,
+        default_factory=list,
         max_length=4,
-        description="2-4 scenes, each with an image URL.",
+        description="2-4 scenes, each with an image URL. Alternative to `image_urls`.",
+    )
+    image_urls: list[HttpUrl] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Alternative to `scenes`: a flat list of 2-4 image URLs.",
     )
     scene_texts: list[str] = Field(
-        ...,
-        min_length=2,
+        default_factory=list,
         max_length=4,
         description=(
             "2-4 overlay text strings mapped to scenes by index. "
-            "If fewer texts than scenes, the last text repeats for remaining scenes."
+            "If fewer texts than scenes, the last text repeats for remaining scenes. "
+            "Alternative to text_scene_1/text_scene_2/text_scene_3/text_scene_4."
         ),
     )
+    text_scene_1: str | None = Field(default=None, exclude=True)
+    text_scene_2: str | None = Field(default=None, exclude=True)
+    text_scene_3: str | None = Field(default=None, exclude=True)
+    text_scene_4: str | None = Field(default=None, exclude=True)
     transition: str | None = Field(
         default=None,
         max_length=20,
@@ -115,6 +123,34 @@ class VideoRequest(BaseModel):
             "ancient_empire. Omit to use the default (luxury_chill)."
         ),
     )
+
+    @model_validator(mode="after")
+    def normalize_alternate_fields(self) -> "VideoRequest":
+        if not self.scenes and self.image_urls:
+            self.scenes = [Scene(image_url=url) for url in self.image_urls]
+        if not self.scene_texts:
+            texts = [
+                t
+                for t in (
+                    self.text_scene_1,
+                    self.text_scene_2,
+                    self.text_scene_3,
+                    self.text_scene_4,
+                )
+                if t
+            ]
+            if texts:
+                self.scene_texts = texts
+        if len(self.scenes) < 2 or len(self.scenes) > 4:
+            raise ValueError(
+                "Please provide 2 to 4 scenes, via `scenes` or `image_urls`."
+            )
+        if len(self.scene_texts) < 2 or len(self.scene_texts) > 4:
+            raise ValueError(
+                "Please provide 2 to 4 scene texts, via `scene_texts` or "
+                "text_scene_1/text_scene_2/text_scene_3/text_scene_4."
+            )
+        return self
 
 
 def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
