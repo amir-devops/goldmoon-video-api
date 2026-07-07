@@ -19,6 +19,7 @@ COPY sounds/ ./sounds/
 
 # Download audio + logo from GitHub (binaries excluded from HF git history)
 ARG AUDIO_COMMIT=3861e69
+ARG NEW_AUDIO_COMMIT=813a265d04a180ca505481d82b2ae6ef007af018
 ARG LOGO_COMMIT=cc8c051
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && mkdir -p sounds assets \
@@ -30,6 +31,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${AUDIO_COMMIT}/sounds/samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3" \
     && curl -fsSL -o sounds/tunetank-vlog-beat-background-349853.mp3 \
         "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${AUDIO_COMMIT}/sounds/tunetank-vlog-beat-background-349853.mp3" \
+    && curl -fsSL -o sounds/alex-morgan-arab-trailer-545516.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/alex-morgan-arab-trailer-545516.mp3" \
+    && curl -fsSL -o sounds/elijah_k-cairo-500585.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/elijah_k-cairo-500585.mp3" \
+    && curl -fsSL -o sounds/gr0za-egyptian-egypt-desert-music-557539.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/gr0za-egyptian-egypt-desert-music-557539.mp3" \
+    && curl -fsSL -o sounds/grand_project-desert-travels-391123.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/grand_project-desert-travels-391123.mp3" \
+    && curl -fsSL -o sounds/onetent-ancient-181070.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/onetent-ancient-181070.mp3" \
+    && curl -fsSL -o sounds/the_mountain-ancient-empire-142301.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/the_mountain-ancient-empire-142301.mp3" \
     && curl -fsSL -o assets/logo.png \
         "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${LOGO_COMMIT}/assets/logo.png" \
     && apt-get purge -y curl \
