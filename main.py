@@ -109,8 +109,10 @@ class VideoRequest(BaseModel):
         default=None,
         max_length=40,
         description=(
-            "Optional background music key: desert_ambient, luxury_chill, or "
-            "cinematic_epic. Omit to use the default (luxury_chill)."
+            "Optional background music key: desert_ambient, luxury_chill, "
+            "cinematic_epic, arab_trailer, vlog_energetic, cairo_nights, "
+            "egyptian_desert, desert_travels, ancient_mystique, or "
+            "ancient_empire. Omit to use the default (luxury_chill)."
         ),
     )
 
@@ -196,7 +198,10 @@ def run_n8n_cli() -> None:
         python main.py --images <img1> <img2> [img3] [img4] \\
                        --texts  <text1> <text2> [text3] [text4] \\
                        --title  <video_title> \\
-                       [--music desert_ambient|luxury_chill|cinematic_epic]
+                       [--music desert_ambient|luxury_chill|cinematic_epic|
+                                 arab_trailer|vlog_energetic|cairo_nights|
+                                 egyptian_desert|desert_travels|
+                                 ancient_mystique|ancient_empire]
 
     Environment overrides (optional):
         STYLE, DEBUG_MODE, WEBSITE_URL, LOGO_URL
@@ -229,7 +234,18 @@ def run_n8n_cli() -> None:
     parser.add_argument(
         "--music",
         default="luxury_chill",
-        choices=["desert_ambient", "luxury_chill", "cinematic_epic"],
+        choices=[
+            "desert_ambient",
+            "luxury_chill",
+            "cinematic_epic",
+            "arab_trailer",
+            "vlog_energetic",
+            "cairo_nights",
+            "egyptian_desert",
+            "desert_travels",
+            "ancient_mystique",
+            "ancient_empire",
+        ],
         help="Background music track key (default: luxury_chill)",
     )
     parser.add_argument(

@@ -68,6 +68,13 @@ BG_MUSIC_ALIASES = {
     "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
     "luxury_chill": "tunetank-vlog-beat-background-349853.mp3",
     "cinematic_epic": "samuelfjohanns-cinematic-duduk-192901.mp3",
+    "arab_trailer": "alex-morgan-arab-trailer-545516.mp3",
+    "vlog_energetic": "bombinsound-vlog-youtube-499475.mp3",
+    "cairo_nights": "elijah_k-cairo-500585.mp3",
+    "egyptian_desert": "gr0za-egyptian-egypt-desert-music-557539.mp3",
+    "desert_travels": "grand_project-desert-travels-391123.mp3",
+    "ancient_mystique": "onetent-ancient-181070.mp3",
+    "ancient_empire": "the_mountain-ancient-empire-142301.mp3",
 }
 
 # Curated FFmpeg xfade transitions. One is chosen per render (not per cut) so a
