@@ -161,6 +161,61 @@ export const tour = defineType({
       },
     }),
     defineField({
+      name: 'text_style',
+      title: 'Text Style',
+      type: 'object',
+      description: 'Optional overlay text styling, layered on top of the Video Style preset.',
+      options: {collapsible: true, collapsed: true},
+      fields: [
+        defineField({
+          name: 'mode',
+          title: 'Style Mode',
+          type: 'string',
+          description: 'Optional. Leave unset to use the Video Style preset\'s own text look.',
+          options: {
+            list: [
+              {title: 'Minimalist', value: 'minimalist'},
+              {title: 'Glassmorphism', value: 'glassmorphism'},
+              {title: 'Bold', value: 'bold'},
+            ],
+            layout: 'radio',
+          },
+        }),
+        defineField({
+          name: 'font',
+          title: 'Font',
+          type: 'string',
+          description: 'Optional font name/key, e.g. "Montserrat-Bold". Falls back gracefully if not bundled.',
+          options: {
+            list: [
+              {title: 'Montserrat Bold', value: 'Montserrat-Bold'},
+              {title: 'Oswald Bold', value: 'Oswald-Bold'},
+              {title: 'Playfair Display', value: 'PlayfairDisplay-Regular'},
+            ],
+          },
+        }),
+        defineField({
+          name: 'color',
+          title: 'Text Color',
+          type: 'string',
+          description: 'Optional. Hex code (e.g. #FFFFFF) or FFmpeg color name.',
+        }),
+        defineField({
+          name: 'shadow',
+          title: 'Force Drop Shadow',
+          type: 'boolean',
+          description: 'Optional. Leave unset to use the mode/preset default.',
+        }),
+        defineField({
+          name: 'box_opacity',
+          title: 'Background Box Opacity',
+          type: 'number',
+          description: 'Optional. 0 (transparent) to 1 (solid) opacity for the box behind the text.',
+          validation: (rule) => rule.min(0).max(1),
+        }),
+      ],
+    }),
+    defineField({
       name: 'video_processed',
       title: 'Video Processed',
       type: 'boolean',
