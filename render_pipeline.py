@@ -558,7 +558,7 @@ def build_outro_with_logo_filter(
 
     return (
         f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={FRAMERATE}:d={outro_duration}[bg];"
-        f"[{logo_input_idx}:v]scale=600:-1[logo_scaled];"
+        f"[{logo_input_idx}:v]scale=850:-1[logo_scaled];"
         f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120[with_logo];"
         f"[with_logo]{url_drawtext},"
         f"fps={FRAMERATE}[v_outro]"
