@@ -30,6 +30,7 @@ from render_pipeline import (
     OUTRO_DURATION,
     RenderError,
     TEXT_ANIMATIONS,
+    TEXT_STYLE_MODES,
     TRANSITION_POOL,
     assign_scene_texts,
     load_presets,
@@ -37,6 +38,7 @@ from render_pipeline import (
     pick_transition,
     render_video,
     require_english_text,
+    resolve_text_style,
     safe_output_filename,
 )
 from sanity_client import (
@@ -57,6 +59,34 @@ render_semaphore = asyncio.Semaphore(1)
 
 class Scene(BaseModel):
     image_url: HttpUrl
+
+
+class TextStyle(BaseModel):
+    mode: str | None = Field(
+        default=None,
+        max_length=20,
+        description=f"Named text style: {', '.join(TEXT_STYLE_MODES)}.",
+    )
+    font: str | None = Field(
+        default=None,
+        max_length=40,
+        description="Font name/key. Falls back gracefully if not bundled.",
+    )
+    color: str | None = Field(
+        default=None,
+        max_length=20,
+        description="FFmpeg color for the overlay text, e.g. '#FFFFFF' or 'white'.",
+    )
+    shadow: bool | None = Field(
+        default=None,
+        description="Force text drop-shadow on (true) or off (false).",
+    )
+    box_opacity: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Opacity (0-1) of the translucent background box behind the text.",
+    )
 
 
 class VideoRequest(BaseModel):
@@ -123,6 +153,13 @@ class VideoRequest(BaseModel):
             "ancient_empire. Omit to use the default (luxury_chill)."
         ),
     )
+    text_style: TextStyle | None = Field(
+        default=None,
+        description=(
+            "Optional overlay text style overrides, layered on top of the "
+            "active style preset's own text config."
+        ),
+    )
 
     @model_validator(mode="after")
     def normalize_alternate_fields(self) -> "VideoRequest":
@@ -163,6 +200,11 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "transition": (payload.transition or "").strip().lower() or None,
         "text_animation": (payload.text_animation or "").strip().lower() or None,
         "bg_music": (payload.bg_music or "").strip().lower() or None,
+        "text_style": (
+            payload.text_style.model_dump(exclude_none=True)
+            if payload.text_style
+            else None
+        ),
     }
 
 
@@ -410,6 +452,7 @@ def list_presets(_auth: str = Depends(verify_api_key)) -> dict:
         },
         "transitions": TRANSITION_POOL,
         "text_animations": TEXT_ANIMATIONS,
+        "text_style_modes": list(TEXT_STYLE_MODES),
     }
 
 
@@ -466,6 +509,11 @@ async def render_video_endpoint(
                     pick_text_animation(render_data["text_animation"])
                 except RenderError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if render_data.get("text_style"):
+                try:
+                    resolve_text_style({}, render_data["text_style"])
+                except RenderError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
             logo_url = render_data.get("logo_url")
             if logo_url:
@@ -513,6 +561,7 @@ async def render_video_endpoint(
                         "transition": render_data.get("transition"),
                         "text_animation": render_data.get("text_animation"),
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
+                        "text_style": render_data.get("text_style"),
                     },
                 )
             except RenderError as exc:

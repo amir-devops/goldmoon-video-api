@@ -64,6 +64,34 @@ FONT_PRESET_MAP = {
     "bold": OSWALD_FONT,
 }
 
+# Named text-overlay style modes. Each supplies drawtext-preset overrides
+# applied on top of the active style preset's own text config. `glassmorphism`
+# is approximated as a translucent box behind the text (FFmpeg's drawtext has
+# no true backdrop-blur) rather than a literal frosted-glass blur.
+TEXT_STYLE_MODES = {
+    "minimalist": {
+        "box": 0,
+        "shadowcolor": None,
+        "uppercase": False,
+    },
+    "glassmorphism": {
+        "box": 1,
+        "boxcolor": "black@0.45",
+        "boxborderw": 30,
+        "shadowcolor": "black@0.4",
+        "shadowx": 2,
+        "shadowy": 2,
+        "uppercase": False,
+    },
+    "bold": {
+        "box": 0,
+        "shadowcolor": "black@0.9",
+        "shadowx": 4,
+        "shadowy": 4,
+        "uppercase": True,
+    },
+}
+
 BG_MUSIC_ALIASES = {
     "desert_ambient": "samuelfjohanns-egypt-expedition-a-mysterious-discovery-119128.mp3",
     "luxury_chill": "tunetank-vlog-beat-background-349853.mp3",
@@ -199,6 +227,56 @@ def pick_text_animation(requested: str | None = None) -> str:
             )
         return normalized
     return random.choice(TEXT_ANIMATIONS)
+
+
+def resolve_text_style(
+    text_preset: dict[str, Any], text_style: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge an optional `text_style` override onto a style preset's text config.
+
+    Priority: named `mode` (minimalist/glassmorphism/bold) applies first, then
+    explicit `font`/`color`/`shadow`/`box_opacity` fields override individual
+    fields on top of it. Returns the preset's own text config unchanged when
+    no override is given.
+    """
+    if not text_style:
+        return text_preset
+
+    merged = dict(text_preset)
+
+    mode = normalize_style_name(text_style.get("mode") or "")
+    if mode:
+        if mode not in TEXT_STYLE_MODES:
+            raise RenderError(
+                f"Unknown text_style mode '{text_style['mode']}'. Choose one of: "
+                f"{', '.join(TEXT_STYLE_MODES)}"
+            )
+        for key, value in TEXT_STYLE_MODES[mode].items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
+
+    if text_style.get("font"):
+        merged["font"] = text_style["font"]
+
+    if text_style.get("color"):
+        merged["fontcolor"] = text_style["color"]
+
+    if text_style.get("box_opacity") is not None:
+        opacity = float(text_style["box_opacity"])
+        merged["box"] = 1
+        merged["boxcolor"] = f"black@{opacity}"
+
+    shadow = text_style.get("shadow")
+    if shadow is True and not merged.get("shadowcolor"):
+        merged["shadowcolor"] = "black@0.6"
+        merged.setdefault("shadowx", 2)
+        merged.setdefault("shadowy", 2)
+    elif shadow is False:
+        merged.pop("shadowcolor", None)
+
+    return merged
 
 
 def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
@@ -727,6 +805,8 @@ def render_video(data: dict[str, Any]) -> Path:
         validate_local_image(image_path)
 
     resolved_style, preset = resolve_preset(style_name)
+    text_style = resolve_text_style(preset.get("text", {}), data.get("text_style"))
+    preset = {**preset, "text": text_style}
     transition = pick_transition(data.get("transition"), preset.get("transition"))
     font_path = resolve_font_for_preset(preset)
     music_path = resolve_bg_music(bg_music)
