@@ -20,6 +20,7 @@ COPY sounds/ ./sounds/
 # Download audio + logo from GitHub (binaries excluded from HF git history)
 ARG AUDIO_COMMIT=3861e69
 ARG NEW_AUDIO_COMMIT=813a265d04a180ca505481d82b2ae6ef007af018
+ARG LATEST_AUDIO_REF=main
 ARG LOGO_COMMIT=13ee8a3
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && mkdir -p sounds assets \
@@ -43,6 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/onetent-ancient-181070.mp3" \
     && curl -fsSL -o sounds/the_mountain-ancient-empire-142301.mp3 \
         "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${NEW_AUDIO_COMMIT}/sounds/the_mountain-ancient-empire-142301.mp3" \
+    && curl -fsSL -o sounds/jonasblakewood-motivation-music-557632.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${LATEST_AUDIO_REF}/sounds/jonasblakewood-motivation-music-557632.mp3" \
+    && curl -fsSL -o sounds/kulakovka-fashion-house-275628.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${LATEST_AUDIO_REF}/sounds/kulakovka-fashion-house-275628.mp3" \
+    && curl -fsSL -o sounds/the_mountain-summer-513165.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${LATEST_AUDIO_REF}/sounds/the_mountain-summer-513165.mp3" \
+    && curl -fsSL -o sounds/the_mountain-tropical-tropical-music-508038.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${LATEST_AUDIO_REF}/sounds/the_mountain-tropical-tropical-music-508038.mp3" \
+    && curl -fsSL -o sounds/white_records-short-background-music-for-video-vlog-summer-dance-tropical-house-158706.mp3 \
+        "https://media.githubusercontent.com/media/amir-devops/goldmoon-video-api/${LATEST_AUDIO_REF}/sounds/white_records-short-background-music-for-video-vlog-summer-dance-tropical-house-158706.mp3" \
     && curl -fsSL -o assets/logo.png \
         "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${LOGO_COMMIT}/assets/logo.png" \
     && apt-get purge -y curl \

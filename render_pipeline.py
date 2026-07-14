@@ -24,6 +24,15 @@ CUSTOM_FONT = APP_DIR / "PlayfairDisplay-Regular.ttf"
 MONTSERRAT_FONT = ASSETS_DIR / "Montserrat-Bold.ttf"
 OSWALD_FONT = ASSETS_DIR / "Oswald-Bold.ttf"
 LOGO_PATH = Path(os.getenv("LOGO_PATH", str(ASSETS_DIR / "logo.png")))
+SUBSCRIBE_ICON_PATH = Path(
+    os.getenv("SUBSCRIBE_ICON_PATH", str(ASSETS_DIR / "subscribe_icon.png"))
+)
+
+# Shared cinematic-grade LUT (see scripts/generate_luts.py) applied on top of
+# every preset's own color filter so all styles read as if shot on the same
+# film stock, instead of each preset's differing eq/colorchannelmixer chain
+# producing a visibly different color response.
+CINEMATIC_LUT_PATH = ASSETS_DIR / "luts" / "cinematic_film.cube"
 FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FALLBACK_FONT_ALT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
@@ -49,6 +58,15 @@ OUTRO_URL_FADE_DELAY = 0.4
 OUTRO_URL_FADE_DURATION = 0.5
 OUTRO_URL_FONT_SIZE = 26
 OUTRO_URL_Y = 1180
+
+# Subscribe-button watermark: bottom-anchored, shown briefly at the very
+# start of the video and again over the outro. Only applied when
+# SUBSCRIBE_ICON_PATH exists (same "static asset present = always used"
+# convention as the logo).
+SUBSCRIBE_ICON_WIDTH = 480
+SUBSCRIBE_ICON_BOTTOM_MARGIN = 70
+SUBSCRIBE_ICON_FADE_DURATION = 0.35
+SUBSCRIBE_ICON_HOLD_DURATION = 2.0
 
 DEFAULT_STYLE = "desert_safari"
 DEBUG_TOTAL_DURATION = 3.0
@@ -103,6 +121,11 @@ BG_MUSIC_ALIASES = {
     "desert_travels": "grand_project-desert-travels-391123.mp3",
     "ancient_mystique": "onetent-ancient-181070.mp3",
     "ancient_empire": "the_mountain-ancient-empire-142301.mp3",
+    "motivation_energy": "jonasblakewood-motivation-music-557632.mp3",
+    "fashion_house": "kulakovka-fashion-house-275628.mp3",
+    "summer_breeze": "the_mountain-summer-513165.mp3",
+    "tropical_vibes": "the_mountain-tropical-tropical-music-508038.mp3",
+    "summer_dance": "white_records-short-background-music-for-video-vlog-summer-dance-tropical-house-158706.mp3",
 }
 
 # Curated FFmpeg xfade transitions. One is chosen per render (not per cut) so a
@@ -134,10 +157,12 @@ TRANSITION_POOL = [
 
 # Text overlay entrance animations. Chosen once per render (all scene texts in
 # a video share it) for a coherent look; timing still comes from each preset's
-# fade_delay/fade_duration.
-TEXT_ANIMATIONS = ["fade", "slide_up", "slide_down", "rise_fade"]
+# fade_delay/fade_duration. scale_fade/slide_scale additionally animate
+# fontsize (a true "kinetic type" pop-in), the others only move/fade.
+TEXT_ANIMATIONS = ["fade", "slide_up", "slide_down", "rise_fade", "scale_fade", "slide_scale"]
 TEXT_SLIDE_DISTANCE = 46.0
 TEXT_SLIDE_DISTANCE_SUBTLE = 20.0
+TEXT_SCALE_START_FACTOR = 0.72
 
 _preset_cache: dict[str, Any] | None = None
 
@@ -371,8 +396,84 @@ def resolve_logo_path() -> Path | None:
     return None
 
 
+def resolve_subscribe_icon_path() -> Path | None:
+    if SUBSCRIBE_ICON_PATH.exists():
+        return SUBSCRIBE_ICON_PATH
+    return None
+
+
 def ffmpeg_escape_filter_expr(expr: str) -> str:
     return expr.replace(",", "\\,")
+
+
+def escape_lut_path(path: Path) -> str:
+    """Format a filesystem path for use as lut3d=file='...'.
+
+    Forward slashes work on every platform FFmpeg runs on (including
+    Windows), which sidesteps the need to escape backslashes or the drive
+    letter's colon. Wrapping in single quotes lets the raw colon/slashes
+    pass through the filtergraph parser without further escaping.
+    """
+    posix_path = str(path).replace("\\", "/").replace("'", "")
+    return f"'{posix_path}'"
+
+
+def eased_progress_expr(delay: float, duration: float) -> str:
+    """FFmpeg expr: 0->1 progress starting at `delay`, eased in/out via a
+    cosine curve over `duration` seconds, using the filter's time var `t`.
+
+    Commas are pre-escaped (\\,) for embedding directly inside a filtergraph
+    option value, matching this module's existing expression style.
+    """
+    if duration <= 0:
+        return f"if(lt(t\\,{delay})\\,0\\,1)"
+    return (
+        f"if(lt(t\\,{delay})\\,0\\,"
+        f"if(lt(t\\,{delay + duration})\\,"
+        f"(0.5-0.5*cos(PI*(t-{delay})/{duration}))\\,1))"
+    )
+
+
+def ease_in_out_ratio_expr(progress_expr: str) -> str:
+    """Cosine ease-in-out over an already-computed 0..1 progress expr."""
+    return f"(0.5-0.5*cos(PI*{progress_expr}))"
+
+
+def build_eased_zoom_expr(zoom_cfg: dict[str, Any], duration_frames: int) -> str:
+    """Build an absolute (not incremental) zoompan `z` expression that eases
+    from `start` to `end` across the clip using a cosine in/out curve, based
+    on the output frame number `on` and the known clip length in frames.
+
+    Falls back to a raw `z` string from the preset for backward
+    compatibility if `start`/`end` aren't present.
+    """
+    end = zoom_cfg.get("end")
+    if end is None:
+        return ffmpeg_escape_filter_expr(zoom_cfg.get("z", "1"))
+
+    start = float(zoom_cfg.get("start", 1.0))
+    end = float(end)
+    if duration_frames <= 1 or start == end:
+        return str(end)
+
+    progress = f"min(on/{duration_frames - 1}\\,1)"
+    eased = ease_in_out_ratio_expr(progress)
+    return f"{start}+({end}-{start})*{eased}"
+
+
+def build_eased_pan_expr(expr: str, duration_frames: int) -> str:
+    """Replace linear `on`-based pan drift (e.g. `on*0.7`) in a zoompan x/y
+    expression with an eased frame count, so panning accelerates/decelerates
+    instead of moving at a constant speed. No-op if `on` isn't referenced.
+    """
+    if not expr or not re.search(r"\bon\b", expr):
+        return expr
+    if duration_frames <= 1:
+        eased_on = "0"
+    else:
+        progress = f"min(on/{duration_frames - 1}\\,1)"
+        eased_on = f"({duration_frames - 1}*{ease_in_out_ratio_expr(progress)})"
+    return re.sub(r"\bon\b", eased_on, expr)
 
 
 def format_outro_website_text(url: str) -> str:
@@ -440,12 +541,12 @@ def build_text_offset_expr(
 ) -> str | None:
     """Return a time-based y-offset expression for the given text animation.
 
-    The offset starts non-zero and eases to 0 over [fade_delay, fade_delay +
-    fade_duration], so the text visually settles into its resting position at
-    the same moment the alpha fade completes. Returns None for plain "fade"
-    (no positional movement).
+    The offset starts at `dist` and eases to 0 in step with the alpha fade
+    (cosine ease-in-out over [fade_delay, fade_delay + fade_duration]), so
+    the text visually settles into its resting position at the same moment
+    it becomes fully opaque. Returns None for plain "fade" (no movement).
     """
-    if animation == "slide_up":
+    if animation in ("slide_up", "slide_scale"):
         dist = TEXT_SLIDE_DISTANCE
     elif animation == "rise_fade":
         dist = TEXT_SLIDE_DISTANCE_SUBTLE
@@ -454,15 +555,22 @@ def build_text_offset_expr(
     else:
         return None
 
-    if dist >= 0:
-        return (
-            f"if(lt(t\\,{fade_delay})\\,{dist}\\,"
-            f"max(0\\,{dist}*(1-(t-{fade_delay})/{fade_duration})))"
-        )
-    return (
-        f"if(lt(t\\,{fade_delay})\\,{dist}\\,"
-        f"min(0\\,{dist}*(1-(t-{fade_delay})/{fade_duration})))"
-    )
+    progress = eased_progress_expr(fade_delay, fade_duration)
+    return f"({dist}*(1-{progress}))"
+
+
+def build_text_fontsize_expr(
+    animation: str, base_fontsize: int, fade_delay: float, fade_duration: float
+) -> str:
+    """Return a fontsize expression that eases in from a smaller size for
+    "kinetic" scale-in animations, or a plain constant otherwise.
+    """
+    if animation not in ("scale_fade", "slide_scale"):
+        return str(base_fontsize)
+
+    start_size = max(1, round(base_fontsize * TEXT_SCALE_START_FACTOR))
+    progress = eased_progress_expr(fade_delay, fade_duration)
+    return f"({start_size}+({base_fontsize}-{start_size})*{progress})"
 
 
 def build_drawtext_filters(
@@ -480,6 +588,7 @@ def build_drawtext_filters(
     uppercase = bool(text_preset.get("uppercase", True))
     text_y = text_preset.get("text_y", SCENE_TEXT_START_Y)
     offset_expr = build_text_offset_expr(animation, fade_delay, fade_duration)
+    fontsize_expr = build_text_fontsize_expr(animation, fontsize, fade_delay, fade_duration)
 
     for index, line in enumerate(text_lines):
         display_line = line.strip()
@@ -499,14 +608,10 @@ def build_drawtext_filters(
             f"drawtext=fontfile={escaped_font}",
             f"text='{premium_line}'",
             f"fontcolor={text_preset.get('fontcolor', 'white')}",
-            f"fontsize={fontsize}",
+            f"fontsize={fontsize_expr}",
             "x=(w-text_w)/2",
             f"y={y_position}",
-            (
-                "alpha='if(lt(t\\,"
-                f"{fade_delay})\\,0\\,"
-                f"min((t-{fade_delay})/{fade_duration}\\,1))'"
-            ),
+            f"alpha='{eased_progress_expr(fade_delay, fade_duration)}'",
         ]
 
         if text_preset.get("box"):
@@ -551,9 +656,9 @@ def build_scene_vf_filter(
 ) -> str:
     """Build per-scene FFmpeg -vf chain from preset filter + movement."""
     zoom = preset.get("zoom", {})
-    z_expr = ffmpeg_escape_filter_expr(zoom.get("z", "min(zoom+0.001,1.15)"))
-    x_expr = zoom.get("x", "iw/2-(iw/zoom/2)")
-    y_expr = zoom.get("y", "ih/2-(ih/zoom/2)")
+    z_expr = build_eased_zoom_expr(zoom, duration_frames)
+    x_expr = build_eased_pan_expr(zoom.get("x", "iw/2-(iw/zoom/2)"), duration_frames)
+    y_expr = build_eased_pan_expr(zoom.get("y", "ih/2-(ih/zoom/2)"), duration_frames)
 
     base_filter = (
         f"loop={duration_frames}:1:0,"
@@ -584,6 +689,33 @@ def build_per_scene_texts(scene_texts: list[str]) -> list[list[str]]:
     return result
 
 
+def build_watermark_overlay_filter(
+    icon_input_idx: int,
+    source_label: str,
+    output_label: str,
+    clip_duration: float,
+    width: int = SUBSCRIBE_ICON_WIDTH,
+    bottom_margin: int = SUBSCRIBE_ICON_BOTTOM_MARGIN,
+    fade_duration: float = SUBSCRIBE_ICON_FADE_DURATION,
+    hold_duration: float = SUBSCRIBE_ICON_HOLD_DURATION,
+) -> str:
+    """Fade a bottom-anchored watermark icon in, hold, then fade it out
+    within `clip_duration` seconds of the target clip's own local timeline
+    (each zoompan/color source's `t` starts at 0), and overlay it centered
+    near the bottom edge. `source_label`/`output_label` are bracketed
+    filtergraph labels, e.g. "[v_scene_0]" / "[v_scene_0_sub]".
+    """
+    fade_duration = min(fade_duration, max(clip_duration / 4, 0.05))
+    fade_out_start = max(fade_duration, min(fade_duration + hold_duration, clip_duration - fade_duration))
+    icon_label = f"icon_{output_label.strip('[]')}"
+    return (
+        f"[{icon_input_idx}:v]scale={width}:-1,format=rgba,"
+        f"fade=t=in:st=0:d={fade_duration}:alpha=1,"
+        f"fade=t=out:st={fade_out_start}:d={fade_duration}:alpha=1[{icon_label}];"
+        f"{source_label}[{icon_label}]overlay=(W-w)/2:H-h-{bottom_margin}:format=auto{output_label};"
+    )
+
+
 def build_scene_pipeline(
     num_images: int,
     font_path: str,
@@ -594,6 +726,7 @@ def build_scene_pipeline(
     duration_frames: int,
     transition: str = "fade",
     animation: str = "fade",
+    subscribe_icon_idx: int | None = None,
 ) -> tuple[str, float]:
     filter_parts: list[str] = []
 
@@ -603,7 +736,15 @@ def build_scene_pipeline(
         )
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
-    last_output = "[v_scene_0]"
+    if subscribe_icon_idx is not None:
+        filter_parts.append(
+            build_watermark_overlay_filter(
+                subscribe_icon_idx, "[v_scene_0]", "[v_scene_0_sub]", img_duration
+            )
+        )
+        last_output = "[v_scene_0_sub]"
+    else:
+        last_output = "[v_scene_0]"
     current_offset = img_duration - xfade_duration
     for i in range(1, num_images):
         next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
@@ -615,10 +756,12 @@ def build_scene_pipeline(
         current_offset += img_duration - xfade_duration
 
     merge_filter = preset.get("filter", "").strip()
-    if merge_filter:
-        filter_parts.append(f"[v_images_merged]{merge_filter}[v_graded];")
+    grade_chain = f"{merge_filter}," if merge_filter else ""
+    if CINEMATIC_LUT_PATH.exists():
+        grade_chain += f"lut3d=file={escape_lut_path(CINEMATIC_LUT_PATH)},format=yuv420p"
     else:
-        filter_parts.append("[v_images_merged]format=yuv420p[v_graded];")
+        grade_chain += "format=yuv420p"
+    filter_parts.append(f"[v_images_merged]{grade_chain}[v_graded];")
 
     images_duration = (img_duration * num_images) - (xfade_duration * (num_images - 1))
     return "".join(filter_parts), images_duration
@@ -673,7 +816,8 @@ def build_filter_complex(
     debug_mode: bool = False,
     transition: str = "fade",
     animation: str = "fade",
-) -> tuple[str, list[str], list[str], float]:
+    subscribe_icon_path: Path | None = None,
+) -> tuple[str, list[str], list[str], list[str], float]:
     if not scene_texts or not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
 
@@ -681,6 +825,10 @@ def build_filter_complex(
         debug_mode, num_images
     )
     outro_frames = int(outro_duration * FRAMERATE)
+
+    outro_bg_idx = num_images
+    subscribe_icon_idx = num_images + 1 if subscribe_icon_path else None
+    music_idx = num_images + (2 if subscribe_icon_path else 1)
 
     image_filters, images_duration = build_scene_pipeline(
         num_images,
@@ -692,26 +840,20 @@ def build_filter_complex(
         duration_frames,
         transition,
         animation,
+        subscribe_icon_idx,
     )
 
-    outro_bg_idx = num_images
-    music_idx = num_images + 1
     outro_offset = images_duration - xfade_duration
     total_duration = images_duration + outro_duration - xfade_duration
 
     if logo_path:
-        outro_filters = (
-            build_outro_with_logo_filter(font_path, num_images, website_url, outro_frames)
-            + ";"
-            + f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
-            f"offset={outro_offset}[v_final];"
+        outro_build_filters = build_outro_with_logo_filter(
+            font_path, num_images, website_url, outro_frames
         )
         outro_input = ["-i", str(logo_path)]
     else:
-        outro_filters = (
-            f"[{outro_bg_idx}:v]{build_outro_filter(font_path, website_url, outro_frames)}[v_outro];"
-            f"[v_graded][v_outro]xfade=transition=fade:duration={xfade_duration}:"
-            f"offset={outro_offset}[v_final];"
+        outro_build_filters = (
+            f"[{outro_bg_idx}:v]{build_outro_filter(font_path, website_url, outro_frames)}[v_outro]"
         )
         outro_input = [
             "-f",
@@ -719,6 +861,27 @@ def build_filter_complex(
             "-i",
             f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d={outro_duration}:r={FRAMERATE}",
         ]
+
+    if subscribe_icon_idx is not None:
+        outro_watermark = build_watermark_overlay_filter(
+            subscribe_icon_idx, "[v_outro]", "[v_outro_sub]", outro_duration
+        )
+        outro_final_label = "[v_outro_sub]"
+    else:
+        outro_watermark = ""
+        outro_final_label = "[v_outro]"
+
+    outro_filters = (
+        f"{outro_build_filters};{outro_watermark}"
+        f"[v_graded]{outro_final_label}xfade=transition=fade:duration={xfade_duration}:"
+        f"offset={outro_offset}[v_final];"
+    )
+
+    # -loop 1 makes ffmpeg emit the still image as a continuous stream of
+    # frames with advancing timestamps, which the fade-in/out filters below
+    # need to animate; without it the icon is a single frame at pts=0 and
+    # the fade filter evaluates it as permanently transparent.
+    subscribe_input = ["-loop", "1", "-i", str(subscribe_icon_path)] if subscribe_icon_path else []
 
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
@@ -733,6 +896,7 @@ def build_filter_complex(
     return (
         image_filters + outro_filters + audio_filters,
         outro_input,
+        subscribe_input,
         audio_input,
         total_duration,
     )
@@ -811,9 +975,10 @@ def render_video(data: dict[str, Any]) -> Path:
     font_path = resolve_font_for_preset(preset)
     music_path = resolve_bg_music(bg_music)
     effective_logo = logo_path if logo_path and logo_path.exists() else resolve_logo_path()
+    subscribe_icon_path = resolve_subscribe_icon_path()
     num_images = len(image_paths)
 
-    filter_complex, outro_input, audio_input, total_duration = build_filter_complex(
+    filter_complex, outro_input, subscribe_input, audio_input, total_duration = build_filter_complex(
         num_images,
         font_path,
         scene_text_lines,
@@ -824,6 +989,7 @@ def render_video(data: dict[str, Any]) -> Path:
         debug_mode=debug_mode,
         transition=transition,
         animation=text_animation,
+        subscribe_icon_path=subscribe_icon_path,
     )
 
     if output_path is None:
@@ -833,6 +999,7 @@ def render_video(data: dict[str, Any]) -> Path:
     for img in image_paths:
         command.extend(["-i", str(img)])
     command.extend(outro_input)
+    command.extend(subscribe_input)
     command.extend(audio_input)
     command.extend(
         [
