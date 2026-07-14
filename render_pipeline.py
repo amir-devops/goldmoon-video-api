@@ -63,7 +63,7 @@ OUTRO_URL_Y = 1180
 # start of the video and again over the outro. Only applied when
 # SUBSCRIBE_ICON_PATH exists (same "static asset present = always used"
 # convention as the logo).
-SUBSCRIBE_ICON_WIDTH = 480
+SUBSCRIBE_ICON_WIDTH = 300
 SUBSCRIBE_ICON_BOTTOM_MARGIN = 70
 SUBSCRIBE_ICON_FADE_DURATION = 0.35
 SUBSCRIBE_ICON_HOLD_DURATION = 2.0

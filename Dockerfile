@@ -20,7 +20,7 @@ COPY sounds/ ./sounds/
 # Download audio + logo from GitHub (binaries excluded from HF git history)
 ARG AUDIO_COMMIT=3861e69
 ARG NEW_AUDIO_COMMIT=813a265d04a180ca505481d82b2ae6ef007af018
-ARG LATEST_AUDIO_REF=main
+ARG LATEST_AUDIO_REF=08cda36
 ARG LOGO_COMMIT=13ee8a3
 ARG SUBSCRIBE_ICON_COMMIT=c8674f2
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
