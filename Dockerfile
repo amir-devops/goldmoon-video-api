@@ -22,6 +22,7 @@ ARG AUDIO_COMMIT=3861e69
 ARG NEW_AUDIO_COMMIT=813a265d04a180ca505481d82b2ae6ef007af018
 ARG LATEST_AUDIO_REF=main
 ARG LOGO_COMMIT=13ee8a3
+ARG SUBSCRIBE_ICON_COMMIT=c8674f2
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && mkdir -p sounds assets \
     && curl -fsSL -o sounds/bombinsound-vlog-youtube-499475.mp3 \
@@ -61,6 +62,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         || rm -f sounds/white_records-short-background-music-for-video-vlog-summer-dance-tropical-house-158706.mp3) \
     && curl -fsSL -o assets/logo.png \
         "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${LOGO_COMMIT}/assets/logo.png" \
+    && curl -fsSL -o assets/subscribe_icon.png \
+        "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${SUBSCRIBE_ICON_COMMIT}/assets/subscribe_icon.png" \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*

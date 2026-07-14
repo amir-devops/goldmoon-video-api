@@ -7,6 +7,7 @@ venv/
 sounds/*.mp3
 assets/*.mp3
 assets/logo.png
+assets/subscribe_icon.png
 images/
 images-web/
 sanity/node_modules/
