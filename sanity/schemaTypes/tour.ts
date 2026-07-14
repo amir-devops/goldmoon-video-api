@@ -168,6 +168,44 @@ export const tour = defineType({
       },
     }),
     defineField({
+      name: 'lut_enabled',
+      title: 'Cinematic Color Grade',
+      type: 'boolean',
+      description:
+        'Apply the shared cinematic LUT color grade on top of the Video Style preset. Uncheck to use the preset\'s own colors only.',
+      initialValue: true,
+    }),
+    defineField({
+      name: 'subscribe_icon_enabled',
+      title: 'Show Subscribe Icon',
+      type: 'boolean',
+      description:
+        'Show the subscribe-button watermark at the bottom of the video, briefly at the start and again over the outro.',
+      initialValue: true,
+    }),
+    defineField({
+      name: 'zoom_override',
+      title: 'Zoom Override',
+      type: 'object',
+      description:
+        'Optional. Override the Video Style preset\'s built-in Ken Burns zoom start/end levels (1 = no zoom).',
+      options: {collapsible: true, collapsed: true},
+      fields: [
+        defineField({
+          name: 'start',
+          title: 'Zoom Start',
+          type: 'number',
+          validation: (rule) => rule.min(1).max(3),
+        }),
+        defineField({
+          name: 'end',
+          title: 'Zoom End',
+          type: 'number',
+          validation: (rule) => rule.min(1).max(3),
+        }),
+      ],
+    }),
+    defineField({
       name: 'text_style',
       title: 'Text Style',
       type: 'object',

@@ -89,6 +89,15 @@ class TextStyle(BaseModel):
     )
 
 
+class ZoomOverride(BaseModel):
+    start: float | None = Field(
+        default=None, ge=1, le=3, description="Zoom level at the start of each scene (1 = no zoom)."
+    )
+    end: float | None = Field(
+        default=None, ge=1, le=3, description="Zoom level at the end of each scene."
+    )
+
+
 class VideoRequest(BaseModel):
     style: str = Field(
         default="",
@@ -160,6 +169,18 @@ class VideoRequest(BaseModel):
             "active style preset's own text config."
         ),
     )
+    lut_enabled: bool = Field(
+        default=True,
+        description="Apply the shared cinematic LUT color grade. Set false to use the style preset's own colors only.",
+    )
+    subscribe_icon_enabled: bool = Field(
+        default=True,
+        description="Show the subscribe-button watermark at the start and end of the video.",
+    )
+    zoom_override: ZoomOverride | None = Field(
+        default=None,
+        description="Optional zoom start/end override, layered on top of the active style preset's own Ken Burns levels.",
+    )
 
     @model_validator(mode="after")
     def normalize_alternate_fields(self) -> "VideoRequest":
@@ -203,6 +224,13 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "text_style": (
             payload.text_style.model_dump(exclude_none=True)
             if payload.text_style
+            else None
+        ),
+        "lut_enabled": payload.lut_enabled,
+        "subscribe_icon_enabled": payload.subscribe_icon_enabled,
+        "zoom_override": (
+            payload.zoom_override.model_dump(exclude_none=True)
+            if payload.zoom_override
             else None
         ),
     }
@@ -562,6 +590,9 @@ async def render_video_endpoint(
                         "text_animation": render_data.get("text_animation"),
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
                         "text_style": render_data.get("text_style"),
+                        "lut_enabled": render_data.get("lut_enabled", True),
+                        "subscribe_icon_enabled": render_data.get("subscribe_icon_enabled", True),
+                        "zoom_override": render_data.get("zoom_override"),
                     },
                 )
             except RenderError as exc:

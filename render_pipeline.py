@@ -304,6 +304,24 @@ def resolve_text_style(
     return merged
 
 
+def apply_zoom_override(
+    preset: dict[str, Any], zoom_override: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge optional start/end zoom-level overrides onto a style preset's
+    zoom config, e.g. from a per-tour Sanity override. Leaves pan (x/y)
+    untouched. Returns the preset unchanged when no override is given.
+    """
+    if not zoom_override:
+        return preset
+
+    zoom = dict(preset.get("zoom", {}))
+    if zoom_override.get("start") is not None:
+        zoom["start"] = float(zoom_override["start"])
+    if zoom_override.get("end") is not None:
+        zoom["end"] = float(zoom_override["end"])
+    return {**preset, "zoom": zoom}
+
+
 def sanitize_plain_text(text: str, max_chars: int | None = None) -> str:
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     cleaned = cleaned.replace('"', "").replace("\\", "")
@@ -727,6 +745,7 @@ def build_scene_pipeline(
     transition: str = "fade",
     animation: str = "fade",
     subscribe_icon_idx: int | None = None,
+    lut_enabled: bool = True,
 ) -> tuple[str, float]:
     filter_parts: list[str] = []
 
@@ -757,7 +776,7 @@ def build_scene_pipeline(
 
     merge_filter = preset.get("filter", "").strip()
     grade_chain = f"{merge_filter}," if merge_filter else ""
-    if CINEMATIC_LUT_PATH.exists():
+    if lut_enabled and CINEMATIC_LUT_PATH.exists():
         grade_chain += f"lut3d=file={escape_lut_path(CINEMATIC_LUT_PATH)},format=yuv420p"
     else:
         grade_chain += "format=yuv420p"
@@ -817,6 +836,7 @@ def build_filter_complex(
     transition: str = "fade",
     animation: str = "fade",
     subscribe_icon_path: Path | None = None,
+    lut_enabled: bool = True,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if not scene_texts or not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
@@ -841,6 +861,7 @@ def build_filter_complex(
         transition,
         animation,
         subscribe_icon_idx,
+        lut_enabled,
     )
 
     outro_offset = images_duration - xfade_duration
@@ -939,7 +960,9 @@ def render_video(data: dict[str, Any]) -> Path:
       image_paths: list[Path|str]  (2-4 items)
       scene_texts: list[str]       (2-4 items; if fewer than images, last text repeats)
     Optional:
-      bg_music, style, debug_mode, logo_path, website_url, output_path
+      bg_music, style, debug_mode, logo_path, website_url, output_path,
+      transition, text_animation, text_style, lut_enabled (default True),
+      subscribe_icon_enabled (default True), zoom_override ({start, end})
     """
     raw_image_paths = data["image_paths"]
     raw_scene_texts = data["scene_texts"]
@@ -971,11 +994,14 @@ def render_video(data: dict[str, Any]) -> Path:
     resolved_style, preset = resolve_preset(style_name)
     text_style = resolve_text_style(preset.get("text", {}), data.get("text_style"))
     preset = {**preset, "text": text_style}
+    preset = apply_zoom_override(preset, data.get("zoom_override"))
     transition = pick_transition(data.get("transition"), preset.get("transition"))
     font_path = resolve_font_for_preset(preset)
     music_path = resolve_bg_music(bg_music)
     effective_logo = logo_path if logo_path and logo_path.exists() else resolve_logo_path()
-    subscribe_icon_path = resolve_subscribe_icon_path()
+    subscribe_icon_enabled = bool(data.get("subscribe_icon_enabled", True))
+    subscribe_icon_path = resolve_subscribe_icon_path() if subscribe_icon_enabled else None
+    lut_enabled = bool(data.get("lut_enabled", True))
     num_images = len(image_paths)
 
     filter_complex, outro_input, subscribe_input, audio_input, total_duration = build_filter_complex(
@@ -990,6 +1016,7 @@ def render_video(data: dict[str, Any]) -> Path:
         transition=transition,
         animation=text_animation,
         subscribe_icon_path=subscribe_icon_path,
+        lut_enabled=lut_enabled,
     )
 
     if output_path is None:
