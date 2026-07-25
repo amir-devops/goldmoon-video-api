@@ -974,17 +974,22 @@ def build_filter_complex(
     # the fade filter evaluates it as permanently transparent.
     subscribe_input = ["-loop", "1", "-i", str(subscribe_icon_path)] if subscribe_icon_path else []
 
+    has_voiceover = bool(voiceover_path and voiceover_path.exists())
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
+        # With a voiceover, ducking pulls the bed down during speech, so it
+        # can run louder at rest (in the gaps) without ever competing with
+        # the narration; music-only renders keep the lower fixed level.
+        music_volume = 0.42 if has_voiceover else 0.25
         music_filters = (
             f"[{music_idx}:a]aloop=loop=-1:size=2e+09,atrim=0:{total_duration},"
-            f"volume=0.25[a_music]"
+            f"volume={music_volume}[a_music]"
         )
     else:
         audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
         music_filters = f"[{music_idx}:a]atrim=0:{total_duration}[a_music]"
 
-    if voiceover_path and voiceover_path.exists():
+    if has_voiceover:
         voice_idx = music_idx + 1
         audio_input = audio_input + ["-i", str(voiceover_path)]
         # Duck the music bed under the voiceover (sidechaincompress uses the
@@ -996,8 +1001,8 @@ def build_filter_complex(
             f"{music_filters};"
             f"[{voice_idx}:a]apad,atrim=0:{total_duration},"
             f"asplit=2[a_voice_side][a_voice_mix];"
-            f"[a_music][a_voice_side]sidechaincompress=threshold=0.02:ratio=12:"
-            f"attack=10:release=130[a_music_duck];"
+            f"[a_music][a_voice_side]sidechaincompress=threshold=0.025:ratio=10:"
+            f"attack=10:release=110[a_music_duck];"
             f"[a_music_duck][a_voice_mix]amix=inputs=2:duration=first:"
             f"dropout_transition=0,afade=t=out:st={total_duration - 0.5}:"
             f"d=0.5[a_final]"
