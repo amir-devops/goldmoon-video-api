@@ -926,13 +926,16 @@ def build_filter_complex(
         audio_input = audio_input + ["-i", str(voiceover_path)]
         # Duck the music bed under the voiceover (sidechaincompress uses the
         # voice track as the control signal), then mix the ducked music
-        # back in with the dry voice so speech stays intelligible.
+        # back in with the dry voice so speech stays intelligible. The voice
+        # track feeds two filters (sidechaincompress + amix), so it must be
+        # split first - ffmpeg rejects an output pad consumed twice.
         audio_filters = (
             f"{music_filters};"
-            f"[{voice_idx}:a]apad,atrim=0:{total_duration}[a_voice];"
-            f"[a_music][a_voice]sidechaincompress=threshold=0.05:ratio=8:"
-            f"attack=5:release=400[a_music_duck];"
-            f"[a_music_duck][a_voice]amix=inputs=2:duration=first:"
+            f"[{voice_idx}:a]apad,atrim=0:{total_duration},"
+            f"asplit=2[a_voice_side][a_voice_mix];"
+            f"[a_music][a_voice_side]sidechaincompress=threshold=0.03:ratio=10:"
+            f"attack=10:release=300[a_music_duck];"
+            f"[a_music_duck][a_voice_mix]amix=inputs=2:duration=first:"
             f"dropout_transition=0,afade=t=out:st={total_duration - 0.5}:"
             f"d=0.5[a_final]"
         )
