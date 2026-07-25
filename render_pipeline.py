@@ -988,7 +988,10 @@ def render_video(data: dict[str, Any]) -> Path:
       bg_music, style, debug_mode, logo_path, website_url, output_path,
       transition, text_animation, text_style, lut_enabled (default True),
       subscribe_icon_enabled (default True), zoom_override ({start, end}),
-      voiceover_text (synthesized via Gemini TTS and ducked under bg_music)
+      voiceover_text (synthesized via Gemini TTS and ducked under bg_music),
+      voiceover_voice (Gemini voice name, default "Kore"; see tts.AVAILABLE_VOICES).
+      If voiceover synthesis fails, the render still succeeds without narration
+      (music/captions only) rather than failing the whole request.
     """
     raw_image_paths = data["image_paths"]
     raw_scene_texts = data["scene_texts"]
@@ -1031,13 +1034,21 @@ def render_video(data: dict[str, Any]) -> Path:
     num_images = len(image_paths)
 
     voiceover_text = (data.get("voiceover_text") or "").strip()
+    voiceover_voice = (data.get("voiceover_voice") or "").strip() or None
     voiceover_path: Path | None = None
+    voiceover_failed = False
     if voiceover_text:
-        voiceover_path = APP_DIR / f"voiceover_{uuid.uuid4().hex}.wav"
+        candidate_path = APP_DIR / f"voiceover_{uuid.uuid4().hex}.wav"
         try:
-            synthesize_voiceover(voiceover_text, voiceover_path)
+            synthesize_voiceover(voiceover_text, candidate_path, voice_name=voiceover_voice)
+            voiceover_path = candidate_path
         except TTSError as exc:
-            raise RenderError(f"Voiceover synthesis failed: {exc}") from exc
+            # Soft-fail: narration is an enhancement, not a hard requirement.
+            # An unattended n8n cron run shouldn't lose the whole video (and
+            # the music/captions that already work) over a TTS hiccup.
+            voiceover_failed = True
+            candidate_path.unlink(missing_ok=True)
+            print(f"Warning: voiceover synthesis failed, rendering without it: {exc}")
 
     try:
         filter_complex, outro_input, subscribe_input, audio_input, total_duration = build_filter_complex(
@@ -1102,7 +1113,8 @@ def render_video(data: dict[str, Any]) -> Path:
 
         print(
             f"Render complete with style={resolved_style}, "
-            f"transition={transition}, text_animation={text_animation}"
+            f"transition={transition}, text_animation={text_animation}, "
+            f"voiceover={'failed' if voiceover_failed else ('on' if voiceover_path else 'off')}"
         )
         return output_path
     finally:

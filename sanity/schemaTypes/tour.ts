@@ -76,8 +76,28 @@ export const tour = defineType({
       type: 'text',
       rows: 3,
       description:
-        'Optional narration script, synthesized with Gemini TTS and mixed under the background music. Auto-filled by the n8n workflow if left blank; edit or clear to override. English only, ~15-20 seconds of speech (roughly 40-60 words).',
+        'Optional narration script, synthesized with Gemini TTS and mixed under the background music. Auto-filled by the n8n workflow if left blank; edit or clear to override. English only, ~15-20 seconds of speech (roughly 40-60 words). If synthesis fails for any reason, the video still renders with music only.',
       validation: (rule) => rule.max(500),
+    }),
+    defineField({
+      name: 'voiceover_voice',
+      title: 'Voiceover Voice',
+      type: 'string',
+      description: 'Optional. Which Gemini TTS voice reads the Voiceover Script. Leave unset to use the default (Kore).',
+      options: {
+        list: [
+          {title: 'Kore - Firm, confident (default)', value: 'Kore'},
+          {title: 'Puck - Upbeat, energetic', value: 'Puck'},
+          {title: 'Charon - Deep, informative', value: 'Charon'},
+          {title: 'Zephyr - Bright, breezy', value: 'Zephyr'},
+          {title: 'Fenrir - Excitable, punchy', value: 'Fenrir'},
+          {title: 'Leda - Youthful, warm', value: 'Leda'},
+          {title: 'Orus - Authoritative, steady', value: 'Orus'},
+          {title: 'Aoede - Airy, gentle', value: 'Aoede'},
+        ],
+        layout: 'dropdown',
+      },
+      hidden: ({document}) => !document?.voiceover_text,
     }),
     defineField({
       name: 'bg_music',

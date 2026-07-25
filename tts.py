@@ -13,6 +13,21 @@ GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_VOICE = "Kore"
 TTS_SAMPLE_RATE = 24000
 
+# Curated subset of Gemini's prebuilt voices (it offers ~30; these cover a
+# useful spread of tone for marketing narration). Any other valid Gemini
+# voice name still works - this list is for validation/UI, not an allowlist
+# enforced against the API itself.
+AVAILABLE_VOICES = {
+    "Kore": "Firm, confident (default)",
+    "Puck": "Upbeat, energetic",
+    "Charon": "Deep, informative",
+    "Zephyr": "Bright, breezy",
+    "Fenrir": "Excitable, punchy",
+    "Leda": "Youthful, warm",
+    "Orus": "Authoritative, steady",
+    "Aoede": "Airy, gentle",
+}
+
 
 class TTSError(Exception):
     pass
@@ -24,6 +39,8 @@ def synthesize_voiceover(
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise TTSError("GEMINI_API_KEY is not configured.")
+
+    voice_name = (voice_name or DEFAULT_VOICE).strip() or DEFAULT_VOICE
 
     client = genai.Client(api_key=api_key)
     try:

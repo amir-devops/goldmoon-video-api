@@ -41,6 +41,7 @@ from render_pipeline import (
     resolve_text_style,
     safe_output_filename,
 )
+from tts import AVAILABLE_VOICES, DEFAULT_VOICE
 from sanity_client import (
     SANITY_DATASET,
     SANITY_PROJECT_ID,
@@ -167,7 +168,16 @@ class VideoRequest(BaseModel):
         max_length=2000,
         description=(
             "Optional narration script. Synthesized via Gemini TTS and "
-            "mixed in, ducking bg_music under the speech. Omit for music-only audio."
+            "mixed in, ducking bg_music under the speech. Omit for music-only audio. "
+            "If synthesis fails, the render still succeeds without narration."
+        ),
+    )
+    voiceover_voice: str | None = Field(
+        default=None,
+        max_length=30,
+        description=(
+            "Optional Gemini TTS voice name (see /presets for the curated list). "
+            "Omit to use the default voice (Kore)."
         ),
     )
     text_style: TextStyle | None = Field(
@@ -230,6 +240,7 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "text_animation": (payload.text_animation or "").strip().lower() or None,
         "bg_music": (payload.bg_music or "").strip().lower() or None,
         "voiceover_text": (payload.voiceover_text or "").strip() or None,
+        "voiceover_voice": (payload.voiceover_voice or "").strip() or None,
         "text_style": (
             payload.text_style.model_dump(exclude_none=True)
             if payload.text_style
@@ -381,6 +392,12 @@ def run_n8n_cli() -> None:
         metavar="TEXT",
         help="Optional narration script, synthesized via Gemini TTS and ducked under bg_music.",
     )
+    parser.add_argument(
+        "--voiceover-voice",
+        default=None,
+        metavar="VOICE",
+        help="Optional Gemini TTS voice name (see tts.AVAILABLE_VOICES). Default: Kore.",
+    )
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -433,6 +450,7 @@ def run_n8n_cli() -> None:
                 "transition": args.transition,
                 "text_animation": args.text_animation,
                 "voiceover_text": args.voiceover,
+                "voiceover_voice": args.voiceover_voice,
             }
         )
     except RenderError as exc:
@@ -497,6 +515,8 @@ def list_presets(_auth: str = Depends(verify_api_key)) -> dict:
         "transitions": TRANSITION_POOL,
         "text_animations": TEXT_ANIMATIONS,
         "text_style_modes": list(TEXT_STYLE_MODES),
+        "voiceover_voices": AVAILABLE_VOICES,
+        "default_voiceover_voice": DEFAULT_VOICE,
     }
 
 
@@ -606,6 +626,7 @@ async def render_video_endpoint(
                         "text_animation": render_data.get("text_animation"),
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
                         "voiceover_text": render_data.get("voiceover_text"),
+                        "voiceover_voice": render_data.get("voiceover_voice"),
                         "text_style": render_data.get("text_style"),
                         "lut_enabled": render_data.get("lut_enabled", True),
                         "subscribe_icon_enabled": render_data.get("subscribe_icon_enabled", True),
