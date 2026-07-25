@@ -66,8 +66,9 @@ OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
 DEFAULT_WEBSITE_URL = "https://www.goldmoontours.com/en"
 OUTRO_URL_FADE_DELAY = 0.4
 OUTRO_URL_FADE_DURATION = 0.5
-OUTRO_URL_FONT_SIZE = 26
+OUTRO_URL_FONT_SIZE = 36
 OUTRO_URL_Y = 1180
+OUTRO_URL_COLOR = "#F7941D"
 LOGO_FADE_DURATION = 0.6
 LOGO_RISE_DISTANCE = 40
 
@@ -564,7 +565,7 @@ def build_outro_url_drawtext(escaped_font: str, website_url: str, fade: bool = T
     parts = [
         f"drawtext=fontfile={escaped_font}",
         f"text='{clean_url}'",
-        "fontcolor=white",
+        f"fontcolor={OUTRO_URL_COLOR}",
         f"fontsize={OUTRO_URL_FONT_SIZE}",
         "x=(w-text_w)/2",
         f"y={OUTRO_URL_Y}",
@@ -941,7 +942,11 @@ def build_filter_complex(
         outro_build_filters = build_outro_with_logo_filter(
             font_path, num_images, website_url, outro_frames
         )
-        outro_input = ["-i", str(logo_path)]
+        # -loop 1: see the subscribe-icon comment below - the logo now
+        # animates (fade-in + rise), which needs an advancing timestamp;
+        # without this it's a single frame at pts=0 and the fade filter
+        # evaluates it as permanently transparent.
+        outro_input = ["-loop", "1", "-i", str(logo_path)]
     else:
         outro_build_filters = (
             f"[{outro_bg_idx}:v]{build_outro_filter(font_path, website_url, outro_frames)}[v_outro]"
