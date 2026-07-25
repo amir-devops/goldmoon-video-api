@@ -4,8 +4,19 @@ the pipeline (filtergraph construction, style resolution, etc.) is already
 covered directly in test_render_pipeline.py.
 """
 
+import wave
+
 import render_pipeline as rp
 from tts import TTSError
+
+
+def _write_fake_wav(path, duration=3.0):
+    """Write a minimal real WAV file so get_audio_duration can parse it."""
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x00\x00" * int(24000 * duration))
 
 
 def _fake_render_env(monkeypatch, output_path, images):
@@ -79,7 +90,7 @@ def test_render_video_passes_requested_voice_through(monkeypatch, tmp_path):
 
     def recording_synthesize(text, path, voice_name=None):
         captured["voice_name"] = voice_name
-        path.write_bytes(b"fake-wav")
+        _write_fake_wav(path)
 
     monkeypatch.setattr(rp, "synthesize_voiceover", recording_synthesize)
 
@@ -105,7 +116,7 @@ def test_render_video_defaults_voice_to_none_when_unset(monkeypatch, tmp_path):
 
     def recording_synthesize(text, path, voice_name=None):
         captured["voice_name"] = voice_name
-        path.write_bytes(b"fake-wav")
+        _write_fake_wav(path)
 
     monkeypatch.setattr(rp, "synthesize_voiceover", recording_synthesize)
 

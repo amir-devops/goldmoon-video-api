@@ -14,7 +14,7 @@ from typing import Any
 
 from PIL import Image
 
-from tts import TTSError, synthesize_voiceover
+from tts import TTSError, get_audio_duration, synthesize_voiceover
 
 APP_DIR = Path(os.getenv("APP_DIR", "/app"))
 ASSETS_DIR = APP_DIR / "assets"
@@ -45,6 +45,13 @@ IMG_DURATION = 4.0
 XFADE_DURATION = 0.5
 FRAMERATE = 30
 DURATION_FRAMES = int(IMG_DURATION * FRAMERATE)
+# When a voiceover is present, scenes are stretched/shrunk to match its
+# actual length instead of the fixed IMG_DURATION, so on-screen captions
+# stay in sync with the narration. Clamped so a very short or very long
+# script doesn't produce scenes too fast for the Ken Burns pan/zoom and
+# text fades, or so long they look static.
+MIN_VOICEOVER_IMG_DURATION = 2.5
+MAX_VOICEOVER_IMG_DURATION = 8.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 FFMPEG_TIMEOUT = 600
 WRAP_CHARS = 28
@@ -350,6 +357,7 @@ def safe_output_filename(video_title: str) -> str:
 def resolve_render_timing(
     debug_mode: bool,
     num_images: int,
+    voiceover_duration: float | None = None,
 ) -> tuple[float, float, float, int]:
     if debug_mode:
         xfade_duration = 0.25
@@ -357,6 +365,19 @@ def resolve_render_timing(
         img_duration = (
             DEBUG_TOTAL_DURATION - outro_duration + xfade_duration + (num_images - 1) * xfade_duration
         ) / num_images
+        return img_duration, xfade_duration, outro_duration, int(img_duration * FRAMERATE)
+    if voiceover_duration:
+        xfade_duration = XFADE_DURATION
+        outro_duration = OUTRO_DURATION
+        # Solve for the per-scene duration that makes the crossfaded scene
+        # sequence (see build_scene_pipeline's images_duration formula) add
+        # up to the voiceover's length, so captions and narration line up.
+        raw_img_duration = (
+            voiceover_duration + (num_images - 1) * xfade_duration
+        ) / num_images
+        img_duration = max(
+            MIN_VOICEOVER_IMG_DURATION, min(MAX_VOICEOVER_IMG_DURATION, raw_img_duration)
+        )
         return img_duration, xfade_duration, outro_duration, int(img_duration * FRAMERATE)
     return IMG_DURATION, XFADE_DURATION, OUTRO_DURATION, DURATION_FRAMES
 
@@ -841,6 +862,7 @@ def build_filter_complex(
     subscribe_icon_path: Path | None = None,
     lut_enabled: bool = True,
     voiceover_path: Path | None = None,
+    voiceover_duration: float | None = None,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if len(scene_texts) != num_images:
         raise ValueError(
@@ -849,7 +871,7 @@ def build_filter_complex(
         )
 
     img_duration, xfade_duration, outro_duration, duration_frames = resolve_render_timing(
-        debug_mode, num_images
+        debug_mode, num_images, voiceover_duration
     )
     outro_frames = int(outro_duration * FRAMERATE)
 
@@ -998,8 +1020,12 @@ def render_video(data: dict[str, Any]) -> Path:
       voiceover_voice (Gemini voice name, default "Kore"; see tts.AVAILABLE_VOICES).
       enable_text_overlay (default True): set False to hide the on-screen
       scene captions entirely and render on images + music + voiceover only.
+      When voiceover_text synthesizes successfully, scene durations are
+      derived from the narration's actual length (clamped to
+      MIN/MAX_VOICEOVER_IMG_DURATION per scene) so on-screen captions stay
+      in sync with what's being spoken, instead of the fixed IMG_DURATION.
       If voiceover synthesis fails, the render still succeeds without narration
-      (music/captions only) rather than failing the whole request.
+      (music/captions only, fixed IMG_DURATION) rather than failing the whole request.
     """
     raw_image_paths = data["image_paths"]
     raw_scene_texts = data.get("scene_texts") or []
@@ -1048,12 +1074,14 @@ def render_video(data: dict[str, Any]) -> Path:
     voiceover_text = (data.get("voiceover_text") or "").strip()
     voiceover_voice = (data.get("voiceover_voice") or "").strip() or None
     voiceover_path: Path | None = None
+    voiceover_duration: float | None = None
     voiceover_failed = False
     if voiceover_text:
         candidate_path = APP_DIR / f"voiceover_{uuid.uuid4().hex}.wav"
         try:
             synthesize_voiceover(voiceover_text, candidate_path, voice_name=voiceover_voice)
             voiceover_path = candidate_path
+            voiceover_duration = get_audio_duration(candidate_path)
         except TTSError as exc:
             # Soft-fail: narration is an enhancement, not a hard requirement.
             # An unattended n8n cron run shouldn't lose the whole video (and
@@ -1077,6 +1105,7 @@ def render_video(data: dict[str, Any]) -> Path:
             subscribe_icon_path=subscribe_icon_path,
             lut_enabled=lut_enabled,
             voiceover_path=voiceover_path,
+            voiceover_duration=voiceover_duration,
         )
 
         if output_path is None:

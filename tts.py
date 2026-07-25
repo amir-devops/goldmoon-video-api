@@ -33,6 +33,12 @@ class TTSError(Exception):
     pass
 
 
+def get_audio_duration(path: Path) -> float:
+    """Return the duration in seconds of a WAV file written by synthesize_voiceover."""
+    with wave.open(str(path), "rb") as wf:
+        return wf.getnframes() / wf.getframerate()
+
+
 def synthesize_voiceover(
     text: str, output_path: Path, voice_name: str = DEFAULT_VOICE
 ) -> Path:
