@@ -57,18 +57,39 @@ export const tour = defineType({
       },
     }),
     defineField({
+      name: 'enable_text_overlay',
+      title: 'Show Captions on Video',
+      type: 'boolean',
+      description:
+        'Show the on-screen scene captions (Video Hook Text / CTA Text) as text overlays. ' +
+        'Uncheck to hide all on-screen text and render on images, music, and Voiceover only.',
+      initialValue: true,
+    }),
+    defineField({
       name: 'text_scene_1',
       title: 'Video Hook Text',
       type: 'string',
       description: 'English only. Max 60 characters.',
-      validation: (rule) => rule.required().max(60),
+      hidden: ({document}) => document?.enable_text_overlay === false,
+      validation: (rule) =>
+        rule.custom((value, context) => {
+          if (context.document?.enable_text_overlay === false) return true
+          if (!value) return 'Required unless "Show Captions on Video" is unchecked.'
+          return true
+        }).max(60),
     }),
     defineField({
       name: 'text_scene_2',
       title: 'Video CTA Text',
       type: 'string',
       description: 'English only. Max 60 characters.',
-      validation: (rule) => rule.required().max(60),
+      hidden: ({document}) => document?.enable_text_overlay === false,
+      validation: (rule) =>
+        rule.custom((value, context) => {
+          if (context.document?.enable_text_overlay === false) return true
+          if (!value) return 'Required unless "Show Captions on Video" is unchecked.'
+          return true
+        }).max(60),
     }),
     defineField({
       name: 'voiceover_text',

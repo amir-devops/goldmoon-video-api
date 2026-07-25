@@ -842,8 +842,11 @@ def build_filter_complex(
     lut_enabled: bool = True,
     voiceover_path: Path | None = None,
 ) -> tuple[str, list[str], list[str], list[str], float]:
-    if not scene_texts or not any(scene_texts):
-        raise ValueError("Scene text is empty after sanitization")
+    if len(scene_texts) != num_images:
+        raise ValueError(
+            f"scene_texts must have exactly {num_images} entries (one per image, "
+            "empty list allowed for no caption on that scene)."
+        )
 
     img_duration, xfade_duration, outro_duration, duration_frames = resolve_render_timing(
         debug_mode, num_images
@@ -990,24 +993,30 @@ def render_video(data: dict[str, Any]) -> Path:
       subscribe_icon_enabled (default True), zoom_override ({start, end}),
       voiceover_text (synthesized via Gemini TTS and ducked under bg_music),
       voiceover_voice (Gemini voice name, default "Kore"; see tts.AVAILABLE_VOICES).
+      enable_text_overlay (default True): set False to hide the on-screen
+      scene captions entirely and render on images + music + voiceover only.
       If voiceover synthesis fails, the render still succeeds without narration
       (music/captions only) rather than failing the whole request.
     """
     raw_image_paths = data["image_paths"]
-    raw_scene_texts = data["scene_texts"]
+    raw_scene_texts = data.get("scene_texts") or []
+    enable_text_overlay = bool(data.get("enable_text_overlay", True))
 
     if len(raw_image_paths) < 2 or len(raw_image_paths) > 4:
         raise RenderError("Please provide 2 to 4 image paths.")
-    if len(raw_scene_texts) < 2 or len(raw_scene_texts) > 4:
-        raise RenderError("Please provide 2 to 4 scene texts.")
 
     image_paths = [Path(p) for p in raw_image_paths]
 
-    validated_texts = [
-        require_english_text(text, f"scene_texts[{idx}]")
-        for idx, text in enumerate(raw_scene_texts)
-    ]
-    scene_text_lines = assign_scene_texts(len(image_paths), validated_texts)
+    if enable_text_overlay:
+        if len(raw_scene_texts) < 2 or len(raw_scene_texts) > 4:
+            raise RenderError("Please provide 2 to 4 scene texts.")
+        validated_texts = [
+            require_english_text(text, f"scene_texts[{idx}]")
+            for idx, text in enumerate(raw_scene_texts)
+        ]
+        scene_text_lines = assign_scene_texts(len(image_paths), validated_texts)
+    else:
+        scene_text_lines = [[] for _ in image_paths]
 
     bg_music = data.get("bg_music", "luxury_chill")
     debug_mode = bool(data.get("debug_mode", False))

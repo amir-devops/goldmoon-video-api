@@ -180,6 +180,14 @@ class VideoRequest(BaseModel):
             "Omit to use the default voice (Kore)."
         ),
     )
+    enable_text_overlay: bool = Field(
+        default=True,
+        description=(
+            "Show the on-screen scene captions (scene_texts). Set false to "
+            "hide all text overlays and render on images + music + "
+            "voiceover only; scene_texts becomes optional in that case."
+        ),
+    )
     text_style: TextStyle | None = Field(
         default=None,
         description=(
@@ -221,10 +229,13 @@ class VideoRequest(BaseModel):
             raise ValueError(
                 "Please provide 2 to 4 scenes, via `scenes` or `image_urls`."
             )
-        if len(self.scene_texts) < 2 or len(self.scene_texts) > 4:
+        if self.enable_text_overlay and (
+            len(self.scene_texts) < 2 or len(self.scene_texts) > 4
+        ):
             raise ValueError(
                 "Please provide 2 to 4 scene texts, via `scene_texts` or "
-                "text_scene_1/text_scene_2/text_scene_3/text_scene_4."
+                "text_scene_1/text_scene_2/text_scene_3/text_scene_4. "
+                "(Set enable_text_overlay=false to omit captions entirely.)"
             )
         return self
 
@@ -241,6 +252,7 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "bg_music": (payload.bg_music or "").strip().lower() or None,
         "voiceover_text": (payload.voiceover_text or "").strip() or None,
         "voiceover_voice": (payload.voiceover_voice or "").strip() or None,
+        "enable_text_overlay": payload.enable_text_overlay,
         "text_style": (
             payload.text_style.model_dump(exclude_none=True)
             if payload.text_style
@@ -348,9 +360,15 @@ def run_n8n_cli() -> None:
     parser.add_argument(
         "--texts",
         nargs="+",
-        required=True,
+        default=[],
         metavar="TEXT",
-        help="2-4 scene overlay texts (English only, max 60 chars each)",
+        help="2-4 scene overlay texts (English only, max 60 chars each). "
+        "Omit entirely when using --hide-captions.",
+    )
+    parser.add_argument(
+        "--hide-captions",
+        action="store_true",
+        help="Hide on-screen scene captions; render on images + music + voiceover only.",
     )
     parser.add_argument(
         "--title",
@@ -404,16 +422,18 @@ def run_n8n_cli() -> None:
     if len(args.images) < 2 or len(args.images) > 4:
         print("Error: Provide 2 to 4 image paths via --images.")
         sys.exit(1)
-    if len(args.texts) < 2 or len(args.texts) > 4:
-        print("Error: Provide 2 to 4 scene texts via --texts.")
-        sys.exit(1)
 
-    for idx, text in enumerate(args.texts):
-        try:
-            require_english_text(text, f"--texts[{idx}]")
-        except RenderError as exc:
-            print(f"Error: {exc}")
+    enable_text_overlay = not args.hide_captions
+    if enable_text_overlay:
+        if len(args.texts) < 2 or len(args.texts) > 4:
+            print("Error: Provide 2 to 4 scene texts via --texts (or pass --hide-captions).")
             sys.exit(1)
+        for idx, text in enumerate(args.texts):
+            try:
+                require_english_text(text, f"--texts[{idx}]")
+            except RenderError as exc:
+                print(f"Error: {exc}")
+                sys.exit(1)
 
     style = os.getenv("STYLE", "").strip()
     debug_mode = os.getenv("DEBUG_MODE", "").strip().lower() in {"1", "true", "yes"}
@@ -451,6 +471,7 @@ def run_n8n_cli() -> None:
                 "text_animation": args.text_animation,
                 "voiceover_text": args.voiceover,
                 "voiceover_voice": args.voiceover_voice,
+                "enable_text_overlay": enable_text_overlay,
             }
         )
     except RenderError as exc:
@@ -555,11 +576,12 @@ async def render_video_endpoint(
             render_data = resolve_render_request(payload)
 
             # Validate all texts early, before any expensive I/O
-            for idx, text in enumerate(render_data["scene_texts"]):
-                try:
-                    require_english_text(text, f"scene_texts[{idx}]")
-                except RenderError as exc:
-                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if render_data["enable_text_overlay"]:
+                for idx, text in enumerate(render_data["scene_texts"]):
+                    try:
+                        require_english_text(text, f"scene_texts[{idx}]")
+                    except RenderError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
             # Validate optional transition/animation overrides early too.
             # (Only when explicitly provided; None means "pick randomly later".)
@@ -627,6 +649,7 @@ async def render_video_endpoint(
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
                         "voiceover_text": render_data.get("voiceover_text"),
                         "voiceover_voice": render_data.get("voiceover_voice"),
+                        "enable_text_overlay": render_data["enable_text_overlay"],
                         "text_style": render_data.get("text_style"),
                         "lut_enabled": render_data.get("lut_enabled", True),
                         "subscribe_icon_enabled": render_data.get("subscribe_icon_enabled", True),

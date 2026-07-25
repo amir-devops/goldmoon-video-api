@@ -119,3 +119,46 @@ def test_render_video_defaults_voice_to_none_when_unset(monkeypatch, tmp_path):
     )
 
     assert captured["voice_name"] is None
+
+
+def test_render_video_hides_captions_when_overlay_disabled(monkeypatch, tmp_path):
+    output_path = tmp_path / "out.mp4"
+    images = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
+    _fake_render_env(monkeypatch, output_path, images)
+
+    captured = {}
+    real_build_filter_complex = rp.build_filter_complex
+
+    def recording_build_filter_complex(num_images, font_path, scene_texts, *args, **kwargs):
+        captured["scene_texts"] = scene_texts
+        return real_build_filter_complex(num_images, font_path, scene_texts, *args, **kwargs)
+
+    monkeypatch.setattr(rp, "build_filter_complex", recording_build_filter_complex)
+
+    result = rp.render_video(
+        {
+            "image_paths": images,
+            "scene_texts": [],
+            "enable_text_overlay": False,
+            "output_path": output_path,
+        }
+    )
+
+    assert result == output_path
+    assert captured["scene_texts"] == [[], []]
+
+
+def test_render_video_requires_scene_texts_when_overlay_enabled(tmp_path):
+    images = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
+
+    try:
+        rp.render_video(
+            {
+                "image_paths": images,
+                "scene_texts": [],
+                "output_path": tmp_path / "out.mp4",
+            }
+        )
+        assert False, "expected RenderError"
+    except rp.RenderError as exc:
+        assert "scene texts" in str(exc).lower()
