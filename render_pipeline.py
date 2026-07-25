@@ -802,9 +802,10 @@ def build_scene_pipeline(
     duration_frames: int,
     transition: str = "fade",
     animation: str = "fade",
-    subscribe_icon_idx: int | None = None,
     lut_enabled: bool = True,
 ) -> tuple[str, float]:
+    # Subscribe-icon watermark only shows over the outro now, not at the
+    # start of the video - see build_filter_complex's outro_watermark.
     filter_parts: list[str] = []
 
     for i in range(num_images):
@@ -813,15 +814,7 @@ def build_scene_pipeline(
         )
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
-    if subscribe_icon_idx is not None:
-        filter_parts.append(
-            build_watermark_overlay_filter(
-                subscribe_icon_idx, "[v_scene_0]", "[v_scene_0_sub]", img_duration
-            )
-        )
-        last_output = "[v_scene_0_sub]"
-    else:
-        last_output = "[v_scene_0]"
+    last_output = "[v_scene_0]"
     current_offset = img_duration - xfade_duration
     for i in range(1, num_images):
         next_label = f"[v_mix_{i}]" if i < num_images - 1 else "[v_images_merged]"
@@ -931,7 +924,6 @@ def build_filter_complex(
         duration_frames,
         transition,
         animation,
-        subscribe_icon_idx,
         lut_enabled,
     )
 
