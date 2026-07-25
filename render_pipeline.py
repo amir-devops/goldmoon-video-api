@@ -68,6 +68,8 @@ OUTRO_URL_FADE_DELAY = 0.4
 OUTRO_URL_FADE_DURATION = 0.5
 OUTRO_URL_FONT_SIZE = 26
 OUTRO_URL_Y = 1180
+LOGO_FADE_DURATION = 0.6
+LOGO_RISE_DISTANCE = 40
 
 # Subscribe-button watermark: bottom-anchored, shown briefly at the very
 # start of the video and again over the outro. Only applied when
@@ -476,6 +478,27 @@ def eased_progress_expr(delay: float, duration: float) -> str:
     )
 
 
+def build_text_alpha_expr(
+    fade_delay: float, fade_duration: float, scene_duration: float, xfade_duration: float
+) -> str:
+    """Ease text in at `fade_delay`, hold, then ease back out so it's fully
+    transparent before this scene starts crossfading into the next clip.
+
+    Without a fade-out, the caption stays at full opacity right up to the
+    scene's last frame, so it visibly ghosts through the xfade dissolve into
+    the next scene (or the outro card). fade-in and fade-out progress are
+    each 0->1 ramps computed independently, then combined with min() so the
+    result is whichever ramp is currently "more hidden".
+    """
+    fade_out_duration = fade_duration
+    fade_out_start = max(
+        fade_delay + fade_duration, scene_duration - xfade_duration - fade_out_duration
+    )
+    fade_in = eased_progress_expr(fade_delay, fade_duration)
+    fade_out_ramp = eased_progress_expr(fade_out_start, fade_out_duration)
+    return f"min({fade_in}\\,(1-({fade_out_ramp})))"
+
+
 def ease_in_out_ratio_expr(progress_expr: str) -> str:
     """Cosine ease-in-out over an already-computed 0..1 progress expr."""
     return f"(0.5-0.5*cos(PI*{progress_expr}))"
@@ -620,6 +643,8 @@ def build_drawtext_filters(
     text_lines: list[str],
     text_preset: dict[str, Any],
     animation: str = "fade",
+    scene_duration: float | None = None,
+    xfade_duration: float = 0.0,
 ) -> list[str]:
     escaped_font = font_path.replace(":", "\\:")
     text_filters: list[str] = []
@@ -631,6 +656,10 @@ def build_drawtext_filters(
     text_y = text_preset.get("text_y", SCENE_TEXT_START_Y)
     offset_expr = build_text_offset_expr(animation, fade_delay, fade_duration)
     fontsize_expr = build_text_fontsize_expr(animation, fontsize, fade_delay, fade_duration)
+    if scene_duration:
+        alpha_expr = build_text_alpha_expr(fade_delay, fade_duration, scene_duration, xfade_duration)
+    else:
+        alpha_expr = eased_progress_expr(fade_delay, fade_duration)
 
     for index, line in enumerate(text_lines):
         display_line = line.strip()
@@ -653,7 +682,7 @@ def build_drawtext_filters(
             f"fontsize={fontsize_expr}",
             "x=(w-text_w)/2",
             f"y={y_position}",
-            f"alpha='{eased_progress_expr(fade_delay, fade_duration)}'",
+            f"alpha='{alpha_expr}'",
         ]
 
         if text_preset.get("box"):
@@ -695,6 +724,7 @@ def build_scene_vf_filter(
     preset: dict[str, Any],
     duration_frames: int,
     animation: str = "fade",
+    xfade_duration: float = 0.0,
 ) -> str:
     """Build per-scene FFmpeg -vf chain from preset filter + movement."""
     zoom = preset.get("zoom", {})
@@ -715,7 +745,10 @@ def build_scene_vf_filter(
         return f"{base_filter},fps={FRAMERATE}"
 
     text_preset = preset.get("text", {})
-    text_filters = build_drawtext_filters(font_path, text_lines, text_preset, animation)
+    scene_duration = duration_frames / FRAMERATE
+    text_filters = build_drawtext_filters(
+        font_path, text_lines, text_preset, animation, scene_duration, xfade_duration
+    )
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
 
 
@@ -775,7 +808,7 @@ def build_scene_pipeline(
 
     for i in range(num_images):
         scene_filter = build_scene_vf_filter(
-            font_path, scene_texts[i], preset, duration_frames, animation
+            font_path, scene_texts[i], preset, duration_frames, animation, xfade_duration
         )
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
@@ -820,10 +853,18 @@ def build_outro_with_logo_filter(
     url_drawtext = build_outro_url_drawtext(escaped_font, website_url)
     outro_duration = duration_frames / FRAMERATE
 
+    # Fade + rise the logo in instead of having it pop in at full opacity on
+    # the outro card's first frame; clamp the duration so a very short outro
+    # (e.g. debug_mode) still leaves time for the rest of the card.
+    logo_fade_duration = min(LOGO_FADE_DURATION, max(outro_duration / 3, 0.05))
+    logo_progress = ease_in_out_ratio_expr(f"min(t/{logo_fade_duration}\\,1)")
+    logo_rise = f"({LOGO_RISE_DISTANCE}*(1-{logo_progress}))"
+
     return (
         f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={FRAMERATE}:d={outro_duration}[bg];"
-        f"[{logo_input_idx}:v]scale=850:-1[logo_scaled];"
-        f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120[with_logo];"
+        f"[{logo_input_idx}:v]scale=850:-1,format=rgba,"
+        f"fade=t=in:st=0:d={logo_fade_duration}:alpha=1[logo_scaled];"
+        f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120+{logo_rise}[with_logo];"
         f"[with_logo]{url_drawtext},"
         f"fps={FRAMERATE}[v_outro]"
     )
