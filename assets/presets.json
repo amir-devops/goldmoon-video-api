@@ -20,7 +20,7 @@
       "shadowcolor": "gold@0.65",
       "shadowx": 3,
       "shadowy": 3,
-      "text_y": 1100,
+      "text_y": 1580,
       "line_spacing": 85,
       "fade_delay": 0.3,
       "fade_duration": 0.5
@@ -45,7 +45,7 @@
       "shadowcolor": "black@0.9",
       "shadowx": 4,
       "shadowy": 4,
-      "text_y": 1080,
+      "text_y": 1568,
       "line_spacing": 90,
       "fade_delay": 0.15,
       "fade_duration": 0.35
@@ -69,7 +69,7 @@
       "box": 1,
       "boxcolor": "black@0.45",
       "boxborderw": 20,
-      "text_y": 1100,
+      "text_y": 1580,
       "line_spacing": 85,
       "fade_delay": 0.3,
       "fade_duration": 0.5
@@ -91,7 +91,7 @@
       "fontsize": 38,
       "uppercase": false,
       "box": 0,
-      "text_y": 1120,
+      "text_y": 1602,
       "line_spacing": 72,
       "fade_delay": 0.5,
       "fade_duration": 0.8
@@ -135,7 +135,7 @@
       "fontsize": 44,
       "uppercase": false,
       "box": 0,
-      "text_y": 1140,
+      "text_y": 1587,
       "line_spacing": 80,
       "fade_delay": 0.6,
       "fade_duration": 1.0
@@ -159,7 +159,7 @@
       "box": 0,
       "borderw": 2,
       "bordercolor": "white@0.35",
-      "text_y": 1110,
+      "text_y": 1594,
       "line_spacing": 78,
       "fade_delay": 0.4,
       "fade_duration": 0.7
@@ -183,7 +183,7 @@
       "box": 1,
       "boxcolor": "black@0.25",
       "boxborderw": 14,
-      "text_y": 1090,
+      "text_y": 1580,
       "line_spacing": 82,
       "fade_delay": 0.45,
       "fade_duration": 0.65
@@ -208,7 +208,7 @@
       "shadowcolor": "black@0.6",
       "shadowx": 2,
       "shadowy": 2,
-      "text_y": 1100,
+      "text_y": 1580,
       "line_spacing": 85,
       "fade_delay": 0.35,
       "fade_duration": 0.6
@@ -232,7 +232,7 @@
       "box": 0,
       "borderw": 1,
       "bordercolor": "black@0.5",
-      "text_y": 1120,
+      "text_y": 1596,
       "line_spacing": 76,
       "fade_delay": 0.4,
       "fade_duration": 0.6
