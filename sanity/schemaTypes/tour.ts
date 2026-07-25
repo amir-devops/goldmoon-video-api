@@ -71,6 +71,15 @@ export const tour = defineType({
       validation: (rule) => rule.required().max(60),
     }),
     defineField({
+      name: 'voiceover_text',
+      title: 'Voiceover Script',
+      type: 'text',
+      rows: 3,
+      description:
+        'Optional narration script, synthesized with Gemini TTS and mixed under the background music. Auto-filled by the n8n workflow if left blank; edit or clear to override. English only, ~15-20 seconds of speech (roughly 40-60 words).',
+      validation: (rule) => rule.max(500),
+    }),
+    defineField({
       name: 'bg_music',
       title: 'Background Music',
       type: 'string',

@@ -4,3 +4,4 @@ requests
 pydantic
 Pillow
 python-dotenv
+google-genai

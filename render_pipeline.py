@@ -8,10 +8,13 @@ import random
 import re
 import subprocess
 import textwrap
+import uuid
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
+
+from tts import TTSError, synthesize_voiceover
 
 APP_DIR = Path(os.getenv("APP_DIR", "/app"))
 ASSETS_DIR = APP_DIR / "assets"
@@ -837,6 +840,7 @@ def build_filter_complex(
     animation: str = "fade",
     subscribe_icon_path: Path | None = None,
     lut_enabled: bool = True,
+    voiceover_path: Path | None = None,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if not scene_texts or not any(scene_texts):
         raise ValueError("Scene text is empty after sanitization")
@@ -906,13 +910,34 @@ def build_filter_complex(
 
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
-        audio_filters = (
+        music_filters = (
             f"[{music_idx}:a]aloop=loop=-1:size=2e+09,atrim=0:{total_duration},"
-            f"volume=0.25,afade=t=out:st={total_duration - 0.5}:d=0.5[a_final]"
+            f"volume=0.25[a_music]"
         )
     else:
         audio_input = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-        audio_filters = f"[{music_idx}:a]atrim=0:{total_duration}[a_final]"
+        music_filters = f"[{music_idx}:a]atrim=0:{total_duration}[a_music]"
+
+    if voiceover_path and voiceover_path.exists():
+        voice_idx = music_idx + 1
+        audio_input = audio_input + ["-i", str(voiceover_path)]
+        # Duck the music bed under the voiceover (sidechaincompress uses the
+        # voice track as the control signal), then mix the ducked music
+        # back in with the dry voice so speech stays intelligible.
+        audio_filters = (
+            f"{music_filters};"
+            f"[{voice_idx}:a]apad,atrim=0:{total_duration}[a_voice];"
+            f"[a_music][a_voice]sidechaincompress=threshold=0.05:ratio=8:"
+            f"attack=5:release=400[a_music_duck];"
+            f"[a_music_duck][a_voice]amix=inputs=2:duration=first:"
+            f"dropout_transition=0,afade=t=out:st={total_duration - 0.5}:"
+            f"d=0.5[a_final]"
+        )
+    else:
+        audio_filters = (
+            f"{music_filters};"
+            f"[a_music]afade=t=out:st={total_duration - 0.5}:d=0.5[a_final]"
+        )
 
     return (
         image_filters + outro_filters + audio_filters,
@@ -962,7 +987,8 @@ def render_video(data: dict[str, Any]) -> Path:
     Optional:
       bg_music, style, debug_mode, logo_path, website_url, output_path,
       transition, text_animation, text_style, lut_enabled (default True),
-      subscribe_icon_enabled (default True), zoom_override ({start, end})
+      subscribe_icon_enabled (default True), zoom_override ({start, end}),
+      voiceover_text (synthesized via Gemini TTS and ducked under bg_music)
     """
     raw_image_paths = data["image_paths"]
     raw_scene_texts = data["scene_texts"]
@@ -1004,38 +1030,49 @@ def render_video(data: dict[str, Any]) -> Path:
     lut_enabled = bool(data.get("lut_enabled", True))
     num_images = len(image_paths)
 
-    filter_complex, outro_input, subscribe_input, audio_input, total_duration = build_filter_complex(
-        num_images,
-        font_path,
-        scene_text_lines,
-        music_path,
-        effective_logo,
-        preset,
-        website_url=website_url,
-        debug_mode=debug_mode,
-        transition=transition,
-        animation=text_animation,
-        subscribe_icon_path=subscribe_icon_path,
-        lut_enabled=lut_enabled,
-    )
+    voiceover_text = (data.get("voiceover_text") or "").strip()
+    voiceover_path: Path | None = None
+    if voiceover_text:
+        voiceover_path = APP_DIR / f"voiceover_{uuid.uuid4().hex}.wav"
+        try:
+            synthesize_voiceover(voiceover_text, voiceover_path)
+        except TTSError as exc:
+            raise RenderError(f"Voiceover synthesis failed: {exc}") from exc
 
-    if output_path is None:
-        output_path = APP_DIR / f"output_goldmoon_{resolved_style}.mp4"
+    try:
+        filter_complex, outro_input, subscribe_input, audio_input, total_duration = build_filter_complex(
+            num_images,
+            font_path,
+            scene_text_lines,
+            music_path,
+            effective_logo,
+            preset,
+            website_url=website_url,
+            debug_mode=debug_mode,
+            transition=transition,
+            animation=text_animation,
+            subscribe_icon_path=subscribe_icon_path,
+            lut_enabled=lut_enabled,
+            voiceover_path=voiceover_path,
+        )
 
-    command = ["ffmpeg", "-y"]
-    for img in image_paths:
-        command.extend(["-i", str(img)])
-    command.extend(outro_input)
-    command.extend(subscribe_input)
-    command.extend(audio_input)
-    command.extend(
-        [
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[v_final]",
-            "-map",
-            "[a_final]",
+        if output_path is None:
+            output_path = APP_DIR / f"output_goldmoon_{resolved_style}.mp4"
+
+        command = ["ffmpeg", "-y"]
+        for img in image_paths:
+            command.extend(["-i", str(img)])
+        command.extend(outro_input)
+        command.extend(subscribe_input)
+        command.extend(audio_input)
+        command.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v_final]",
+                "-map",
+                "[a_final]",
             "-c:v",
             "libx264",
             "-preset",
@@ -1053,18 +1090,21 @@ def render_video(data: dict[str, Any]) -> Path:
             "-movflags",
             "+faststart",
             "-t",
-            str(total_duration),
-            str(output_path),
-        ]
-    )
+                str(total_duration),
+                str(output_path),
+            ]
+        )
 
-    run_ffmpeg(command)
+        run_ffmpeg(command)
 
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise RenderError("Video rendering failed.")
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise RenderError("Video rendering failed.")
 
-    print(
-        f"Render complete with style={resolved_style}, "
-        f"transition={transition}, text_animation={text_animation}"
-    )
-    return output_path
+        print(
+            f"Render complete with style={resolved_style}, "
+            f"transition={transition}, text_animation={text_animation}"
+        )
+        return output_path
+    finally:
+        if voiceover_path:
+            voiceover_path.unlink(missing_ok=True)

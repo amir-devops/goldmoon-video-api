@@ -38,7 +38,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"query\": \"*[_type == \\\"tour\\\" && !defined(video_processed)] | order(_createdAt asc)[0]{_id, title, \\\"images\\\": images[].asset->url, text_scene_1, text_scene_2, bg_music}\"\n}",
+        "jsonBody": "{\n  \"query\": \"*[_type == \\\"tour\\\" && !defined(video_processed)] | order(_createdAt asc)[0]{_id, title, \\\"images\\\": images[].asset->url, text_scene_1, text_scene_2, bg_music, voiceover_text}\"\n}",
         "options": {}
       },
       "id": "dfa61d30-ef7e-4740-b745-61de0a10d2e9",
@@ -96,7 +96,7 @@
           "messageValues": [
             {
               "type": "=SystemMessagePromptTemplate",
-              "message": "=You are a luxury travel copywriter for \"Goldmoon Egypt Tours\". Write captivating, minimalist marketing copy for a 10-second vertical promotional video.\n\nSTRICT RULES:\n1. Each text_scene value: max 5 words, max 60 characters, English only (no Arabic or other scripts), no emojis.\n2. Output ONLY a single valid JSON object - no markdown, no code fences, no explanations.\n3. music_mood MUST be exactly one of: \"desert_ambient\", \"luxury_chill\", \"cinematic_epic\" (no other values).\n\nREQUIRED OUTPUT FORMAT:\n{\n  \"video_title\": \"short punchy title, max 60 chars\",\n  \"description\": \"1-2 sentence SEO description with a call to action\",\n  \"tags\": [\"Tag1\", \"Tag2\", \"Tag3\", \"Tag4\", \"Tag5\"],\n  \"text_scene_1\": \"...\",\n  \"text_scene_2\": \"...\",\n  \"text_scene_3\": \"...\",\n  \"text_scene_4\": \"...\",\n  \"music_mood\": \"desert_ambient|luxury_chill|cinematic_epic\"\n}"
+              "message": "=You are a luxury travel copywriter for \"Goldmoon Egypt Tours\". Write captivating, minimalist marketing copy for a 10-second vertical promotional video.\n\nSTRICT RULES:\n1. Each text_scene value: max 5 words, max 60 characters, English only (no Arabic or other scripts), no emojis.\n2. voiceover_text: a natural spoken narration script for the same video, English only, no emojis, roughly 40-60 words (about 15-20 seconds read aloud). It should stand on its own as a voiceover, not just repeat the on-screen text_scene lines verbatim.\n3. Output ONLY a single valid JSON object - no markdown, no code fences, no explanations.\n4. music_mood MUST be exactly one of: \"desert_ambient\", \"luxury_chill\", \"cinematic_epic\" (no other values).\n\nREQUIRED OUTPUT FORMAT:\n{\n  \"video_title\": \"short punchy title, max 60 chars\",\n  \"description\": \"1-2 sentence SEO description with a call to action\",\n  \"tags\": [\"Tag1\", \"Tag2\", \"Tag3\", \"Tag4\", \"Tag5\"],\n  \"text_scene_1\": \"...\",\n  \"text_scene_2\": \"...\",\n  \"text_scene_3\": \"...\",\n  \"text_scene_4\": \"...\",\n  \"voiceover_text\": \"...\",\n  \"music_mood\": \"desert_ambient|luxury_chill|cinematic_epic\"\n}"
             }
           ]
         },
@@ -112,24 +112,24 @@
     },
     {
       "parameters": {
-        "model": "deepseek-v4-flash",
+        "modelName": "models/gemini-2.5-flash",
         "options": {}
       },
-      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
       "position": [688, 100],
       "id": "ebe22b1c-a0ad-446e-b79c-8f4d32a8bfd6",
-      "name": "DeepSeek Chat Model",
+      "name": "Gemini Chat Model",
       "credentials": {
-        "deepSeekApi": {
-          "id": "8t1jvfEMHY1k3Qpd",
-          "name": "DeepSeek account"
+        "googlePalmApi": {
+          "id": "REPLACE_WITH_GEMINI_CREDENTIAL_ID",
+          "name": "Gemini account"
         }
       }
     },
     {
       "parameters": {
-        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\n\nif (images.length < 2) {\n  // Don't throw - that would red-X the whole execution. Flag it instead so\n  // the 'Ready To Render?' IF node can route it to a clean no-op.\n  return [{\n    json: {\n      skip: true,\n      reason: `Tour ${tour._id || 'unknown'} has fewer than 2 images; cannot render.`,\n      tour_id: tour._id || '',\n    },\n  }];\n}\n\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\nreturn [{\n  json: {\n    skip: false,\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: tour.bg_music || aiData.music_mood || 'luxury_chill',\n    website_url: 'https://www.goldmoontours.com/en',\n\n    // style / transition / text_animation deliberately omitted:\n    // the API picks a random one of each when they're absent, so every\n    // render gets a different look automatically.\n  },\n}];"
+        "jsCode": "const tourItem = $('Tour Found?').item.json;\nconst tour = tourItem.result || {};\n\nlet aiData = {};\nconst rawAiText = $('Basic LLM Chain').item.json.text;\nif (typeof rawAiText === 'string') {\n  try {\n    aiData = JSON.parse(rawAiText);\n  } catch (e) {\n    aiData = {};\n  }\n}\n\n// Match the goldmoon-video-api /render schema exactly:\n//   scenes: [{ image_url }], scene_texts: [\"...\"], style/transition/text_animation optional.\nconst images = (tour.images || []).filter(Boolean).slice(0, 4);\n\nif (images.length < 2) {\n  // Don't throw - that would red-X the whole execution. Flag it instead so\n  // the 'Ready To Render?' IF node can route it to a clean no-op.\n  return [{\n    json: {\n      skip: true,\n      reason: `Tour ${tour._id || 'unknown'} has fewer than 2 images; cannot render.`,\n      tour_id: tour._id || '',\n    },\n  }];\n}\n\nconst sceneTexts = [\n  aiData.text_scene_1,\n  aiData.text_scene_2,\n  aiData.text_scene_3,\n  aiData.text_scene_4,\n].filter(Boolean);\n\nconst finalTexts = sceneTexts.length >= 2\n  ? sceneTexts.slice(0, images.length)\n  : [tour.title || 'Discover Egypt', 'Book your tour now'];\n\nreturn [{\n  json: {\n    skip: false,\n    // Kept for later nodes (Sanity mutate) via node-reference expressions;\n    // the /render API ignores unknown fields so this is safe to send as-is.\n    tour_id: tour._id || '',\n    video_title: aiData.video_title || tour.title || 'Goldmoon Tour',\n    description: aiData.description || '',\n    tags: aiData.tags || [],\n\n    // Fields actually consumed by POST /render:\n    scenes: images.map((url) => ({ image_url: url })),\n    scene_texts: finalTexts,\n    bg_music: tour.bg_music || aiData.music_mood || 'luxury_chill',\n    voiceover_text: tour.voiceover_text || aiData.voiceover_text || null,\n    website_url: 'https://www.goldmoontours.com/en',\n\n    // style / transition / text_animation deliberately omitted:\n    // the API picks a random one of each when they're absent, so every\n    // render gets a different look automatically.\n  },\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -137,7 +137,7 @@
       "id": "f17769f3-42af-4178-81d0-f19eaa02be77",
       "name": "Build Render Payload",
       "alwaysOutputData": true,
-      "notes": "Outputs {scenes, scene_texts, bg_music, website_url} matching VideoRequest in main.py. Emits {skip:true} instead of throwing when a tour has fewer than 2 images."
+      "notes": "Outputs {scenes, scene_texts, bg_music, voiceover_text, website_url} matching VideoRequest in main.py. Emits {skip:true} instead of throwing when a tour has fewer than 2 images."
     },
     {
       "parameters": {
@@ -193,7 +193,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { scenes: $json.scenes, scene_texts: $json.scene_texts, bg_music: $json.bg_music, website_url: $json.website_url } }}",
+        "jsonBody": "={{ { scenes: $json.scenes, scene_texts: $json.scene_texts, bg_music: $json.bg_music, voiceover_text: $json.voiceover_text, website_url: $json.website_url } }}",
         "options": {
           "response": {
             "response": {
@@ -264,7 +264,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"mutations\": [\n    {\n      \"patch\": {\n        \"id\": \"{{ $('Build Render Payload').item.json.tour_id }}\",\n        \"set\": {\n          \"video_url\": \"{{ $json.document.url }}\",\n          \"video_title\": \"{{ $('Build Render Payload').item.json.video_title }}\",\n          \"video_processed\": true\n        }\n      }\n    }\n  ]\n}",
+        "jsonBody": "={\n  \"mutations\": [\n    {\n      \"patch\": {\n        \"id\": \"{{ $('Build Render Payload').item.json.tour_id }}\",\n        \"set\": {\n          \"video_url\": \"{{ $json.document.url }}\",\n          \"video_title\": \"{{ $('Build Render Payload').item.json.video_title }}\",\n          \"voiceover_text\": {{ JSON.stringify($('Build Render Payload').item.json.voiceover_text || '') }},\n          \"video_processed\": true\n        }\n      }\n    }\n  ]\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -292,7 +292,7 @@
     "Basic LLM Chain": {
       "main": [[{ "node": "Build Render Payload", "type": "main", "index": 0 }]]
     },
-    "DeepSeek Chat Model": {
+    "Gemini Chat Model": {
       "ai_languageModel": [[{ "node": "Basic LLM Chain", "type": "ai_languageModel", "index": 0 }]]
     },
     "Build Render Payload": {

@@ -162,6 +162,14 @@ class VideoRequest(BaseModel):
             "ancient_empire. Omit to use the default (luxury_chill)."
         ),
     )
+    voiceover_text: str | None = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "Optional narration script. Synthesized via Gemini TTS and "
+            "mixed in, ducking bg_music under the speech. Omit for music-only audio."
+        ),
+    )
     text_style: TextStyle | None = Field(
         default=None,
         description=(
@@ -221,6 +229,7 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "transition": (payload.transition or "").strip().lower() or None,
         "text_animation": (payload.text_animation or "").strip().lower() or None,
         "bg_music": (payload.bg_music or "").strip().lower() or None,
+        "voiceover_text": (payload.voiceover_text or "").strip() or None,
         "text_style": (
             payload.text_style.model_dump(exclude_none=True)
             if payload.text_style
@@ -366,6 +375,12 @@ def run_n8n_cli() -> None:
         choices=TEXT_ANIMATIONS,
         help="Text entrance animation. Omit for a random one each run.",
     )
+    parser.add_argument(
+        "--voiceover",
+        default=None,
+        metavar="TEXT",
+        help="Optional narration script, synthesized via Gemini TTS and ducked under bg_music.",
+    )
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -417,6 +432,7 @@ def run_n8n_cli() -> None:
                 "debug_mode": debug_mode,
                 "transition": args.transition,
                 "text_animation": args.text_animation,
+                "voiceover_text": args.voiceover,
             }
         )
     except RenderError as exc:
@@ -589,6 +605,7 @@ async def render_video_endpoint(
                         "transition": render_data.get("transition"),
                         "text_animation": render_data.get("text_animation"),
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
+                        "voiceover_text": render_data.get("voiceover_text"),
                         "text_style": render_data.get("text_style"),
                         "lut_enabled": render_data.get("lut_enabled", True),
                         "subscribe_icon_enabled": render_data.get("subscribe_icon_enabled", True),
