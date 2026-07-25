@@ -12,3 +12,4 @@ images/
 images-web/
 sanity/node_modules/
 sanity/dist/
+.claude/settings.local.json
