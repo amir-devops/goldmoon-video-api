@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 from PIL import Image
 
 from tts import TTSError, get_audio_duration, synthesize_voiceover
@@ -719,6 +721,19 @@ def build_drawtext_filters(
     return text_filters
 
 
+def build_focus_crop_expr(
+    focus_point: tuple[float, float], crop_w: int = 1620, crop_h: int = 2880
+) -> tuple[str, str]:
+    """Build crop filter x/y expressions that keep `focus_point` (normalized
+    fx, fy over the scaled image) centered in the crop window, clamped so
+    the window never runs off the edge of the image.
+    """
+    fx, fy = focus_point
+    x_expr = f"clip({fx}*iw-{crop_w / 2}\\,0\\,iw-{crop_w})"
+    y_expr = f"clip({fy}*ih-{crop_h / 2}\\,0\\,ih-{crop_h})"
+    return x_expr, y_expr
+
+
 def build_scene_vf_filter(
     font_path: str,
     text_lines: list[str],
@@ -726,18 +741,20 @@ def build_scene_vf_filter(
     duration_frames: int,
     animation: str = "fade",
     xfade_duration: float = 0.0,
+    focus_point: tuple[float, float] = (0.5, 0.5),
 ) -> str:
     """Build per-scene FFmpeg -vf chain from preset filter + movement."""
     zoom = preset.get("zoom", {})
     z_expr = build_eased_zoom_expr(zoom, duration_frames)
     x_expr = build_eased_pan_expr(zoom.get("x", "iw/2-(iw/zoom/2)"), duration_frames)
     y_expr = build_eased_pan_expr(zoom.get("y", "ih/2-(ih/zoom/2)"), duration_frames)
+    crop_x_expr, crop_y_expr = build_focus_crop_expr(focus_point)
 
     base_filter = (
         f"loop={duration_frames}:1:0,"
         "format=yuv420p,"
         "scale=w=1620:h=2880:force_original_aspect_ratio=increase,"
-        "crop=1620:2880,"
+        f"crop=1620:2880:x='{crop_x_expr}':y='{crop_y_expr}',"
         f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
         f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}"
     )
@@ -803,14 +820,22 @@ def build_scene_pipeline(
     transition: str = "fade",
     animation: str = "fade",
     lut_enabled: bool = True,
+    focus_points: list[tuple[float, float]] | None = None,
 ) -> tuple[str, float]:
     # Subscribe-icon watermark only shows over the outro now, not at the
     # start of the video - see build_filter_complex's outro_watermark.
     filter_parts: list[str] = []
 
     for i in range(num_images):
+        focus_point = focus_points[i] if focus_points else (0.5, 0.5)
         scene_filter = build_scene_vf_filter(
-            font_path, scene_texts[i], preset, duration_frames, animation, xfade_duration
+            font_path,
+            scene_texts[i],
+            preset,
+            duration_frames,
+            animation,
+            xfade_duration,
+            focus_point,
         )
         filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
 
@@ -898,6 +923,7 @@ def build_filter_complex(
     lut_enabled: bool = True,
     voiceover_path: Path | None = None,
     voiceover_duration: float | None = None,
+    focus_points: list[tuple[float, float]] | None = None,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if len(scene_texts) != num_images:
         raise ValueError(
@@ -925,6 +951,7 @@ def build_filter_complex(
         transition,
         animation,
         lut_enabled,
+        focus_points,
     )
 
     outro_offset = images_duration - xfade_duration
@@ -1031,6 +1058,56 @@ def validate_local_image(path: Path) -> None:
         raise RenderError(f"Invalid image file: {path}") from exc
 
 
+_FACE_CASCADE: cv2.CascadeClassifier | None = None
+
+
+def _get_face_cascade() -> cv2.CascadeClassifier:
+    global _FACE_CASCADE
+    if _FACE_CASCADE is None:
+        _FACE_CASCADE = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+    return _FACE_CASCADE
+
+
+def detect_focus_point(image_path: Path) -> tuple[float, float]:
+    """Return the normalized (fx, fy) coordinate - each in [0, 1] - of the
+    most visually important region of the image, so scene cropping can keep
+    it in frame instead of always taking a blind center crop.
+
+    Tries face detection first (best for photos with people), then falls
+    back to an edge-density centroid (Canny edges) as a generic saliency
+    proxy - detailed regions like a temple facade or a boat's silhouette
+    stand out from flat sky/sand/water, so most landmark and scenery shots
+    still get a sensible subject-following crop. Defaults to dead-center
+    (0.5, 0.5) - the previous fixed behavior - if the image can't be read
+    or has no discernible edges.
+    """
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return 0.5, 0.5
+
+    height, width = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    faces = _get_face_cascade().detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(int(width * 0.05), int(height * 0.05)),
+    )
+    if len(faces) > 0:
+        largest = max(faces, key=lambda f: f[2] * f[3])
+        fx, fy, fw, fh = largest
+        return float(fx + fw / 2) / width, float(fy + fh / 2) / height
+
+    edges = cv2.Canny(gray, 50, 150)
+    ys, xs = np.nonzero(edges)
+    if len(xs) == 0:
+        return 0.5, 0.5
+    return float(np.mean(xs)) / width, float(np.mean(ys)) / height
+
+
 def run_ffmpeg(command: list[str]) -> None:
     try:
         process = subprocess.run(
@@ -1101,6 +1178,8 @@ def render_video(data: dict[str, Any]) -> Path:
     for image_path in image_paths:
         validate_local_image(image_path)
 
+    focus_points = [detect_focus_point(image_path) for image_path in image_paths]
+
     resolved_style, preset = resolve_preset(style_name)
     text_style = resolve_text_style(preset.get("text", {}), data.get("text_style"))
     preset = {**preset, "text": text_style}
@@ -1149,6 +1228,7 @@ def render_video(data: dict[str, Any]) -> Path:
             lut_enabled=lut_enabled,
             voiceover_path=voiceover_path,
             voiceover_duration=voiceover_duration,
+            focus_points=focus_points,
         )
 
         if output_path is None:

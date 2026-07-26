@@ -285,3 +285,66 @@ class TestBuildFilterComplex:
             2, "font.ttf", scene_texts, None, None, preset, debug_mode=True
         )
         assert debug_duration < normal_duration
+
+    def test_focus_points_shift_the_crop_window(self, preset, scene_texts):
+        filter_complex, *_ = rp.build_filter_complex(
+            2, "font.ttf", scene_texts, None, None, preset,
+            focus_points=[(0.8, 0.2), (0.5, 0.5)],
+        )
+        assert "clip(0.8*iw-810.0" in filter_complex
+        assert "clip(0.2*ih-1440.0" in filter_complex
+        # Default (no focus point given) still centers, matching old behavior.
+        assert "clip(0.5*iw-810.0" in filter_complex
+
+    def test_no_focus_points_defaults_to_center_crop(self, preset, scene_texts):
+        filter_complex, *_ = rp.build_filter_complex(
+            2, "font.ttf", scene_texts, None, None, preset
+        )
+        assert filter_complex.count("clip(0.5*iw-810.0") == 2
+
+
+# ---------------------------------------------------------------------------
+# Smart image cropping (focus-point detection)
+# ---------------------------------------------------------------------------
+
+class TestBuildFocusCropExpr:
+    def test_center_focus_matches_old_static_crop(self):
+        x_expr, y_expr = rp.build_focus_crop_expr((0.5, 0.5))
+        assert x_expr == "clip(0.5*iw-810.0\\,0\\,iw-1620)"
+        assert y_expr == "clip(0.5*ih-1440.0\\,0\\,ih-2880)"
+
+    def test_off_center_focus_shifts_window(self):
+        x_expr, y_expr = rp.build_focus_crop_expr((0.9, 0.1))
+        assert "0.9*iw" in x_expr
+        assert "0.1*ih" in y_expr
+
+
+class TestDetectFocusPoint:
+    def test_unreadable_image_defaults_to_center(self, tmp_path):
+        bogus = tmp_path / "not_an_image.jpg"
+        bogus.write_bytes(b"not actually an image")
+        assert rp.detect_focus_point(bogus) == (0.5, 0.5)
+
+    def test_blank_image_defaults_to_center(self, tmp_path):
+        from PIL import Image as PILImage
+
+        blank = tmp_path / "blank.jpg"
+        PILImage.new("RGB", (400, 600), color="gray").save(blank)
+        fx, fy = rp.detect_focus_point(blank)
+        assert fx == pytest.approx(0.5, abs=0.01)
+        assert fy == pytest.approx(0.5, abs=0.01)
+
+    def test_off_center_detail_pulls_focus_toward_it(self, tmp_path):
+        from PIL import Image as PILImage, ImageDraw
+
+        # Flat gray field with a single high-contrast square near the top
+        # right corner - edge-density fallback should pull focus that way.
+        img = PILImage.new("RGB", (400, 600), color="gray")
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([320, 20, 380, 80], fill="black")
+        path = tmp_path / "detail.jpg"
+        img.save(path)
+
+        fx, fy = rp.detect_focus_point(path)
+        assert fx > 0.6
+        assert fy < 0.4
