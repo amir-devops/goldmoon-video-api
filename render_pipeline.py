@@ -508,9 +508,14 @@ def ease_in_out_ratio_expr(progress_expr: str) -> str:
 
 
 def build_eased_zoom_expr(zoom_cfg: dict[str, Any], duration_frames: int) -> str:
-    """Build an absolute (not incremental) zoompan `z` expression that eases
-    from `start` to `end` across the clip using a cosine in/out curve, based
-    on the output frame number `on` and the known clip length in frames.
+    """Build an absolute (not incremental) zoompan `z` expression that moves
+    from `start` to `end` across the clip at a constant rate, based on the
+    output frame number `on` and the known clip length in frames.
+
+    Uses linear (not eased) progress on purpose: a real dolly/zoom move
+    holds a steady speed rather than accelerating through the middle of the
+    shot, which is what reads as "cinematic" rather than a UI-style
+    ease-in-out bounce.
 
     Falls back to a raw `z` string from the preset for backward
     compatibility if `start`/`end` aren't present.
@@ -525,23 +530,19 @@ def build_eased_zoom_expr(zoom_cfg: dict[str, Any], duration_frames: int) -> str
         return str(end)
 
     progress = f"min(on/{duration_frames - 1}\\,1)"
-    eased = ease_in_out_ratio_expr(progress)
-    return f"{start}+({end}-{start})*{eased}"
+    return f"{start}+({end}-{start})*{progress}"
 
 
 def build_eased_pan_expr(expr: str, duration_frames: int) -> str:
-    """Replace linear `on`-based pan drift (e.g. `on*0.7`) in a zoompan x/y
-    expression with an eased frame count, so panning accelerates/decelerates
-    instead of moving at a constant speed. No-op if `on` isn't referenced.
+    """Replace `on`-based pan drift (e.g. `on*0.7`) in a zoompan x/y
+    expression with a duration-clamped frame count, so panning holds the
+    same constant rate as the zoom (see build_eased_zoom_expr) instead of
+    running past the clip's last frame. No-op if `on` isn't referenced.
     """
     if not expr or not re.search(r"\bon\b", expr):
         return expr
-    if duration_frames <= 1:
-        eased_on = "0"
-    else:
-        progress = f"min(on/{duration_frames - 1}\\,1)"
-        eased_on = f"({duration_frames - 1}*{ease_in_out_ratio_expr(progress)})"
-    return re.sub(r"\bon\b", eased_on, expr)
+    clamped_on = "0" if duration_frames <= 1 else f"min(on\\,{duration_frames - 1})"
+    return re.sub(r"\bon\b", clamped_on, expr)
 
 
 def format_outro_website_text(url: str) -> str:
