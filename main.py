@@ -195,6 +195,25 @@ class VideoRequest(BaseModel):
             "active style preset's own text config."
         ),
     )
+    frame_mode: str | None = Field(
+        default=None,
+        max_length=12,
+        description=(
+            "How each image fills the vertical frame: 'reveal' (default) fills "
+            "the whole screen and pans across so the full wide photo is seen; "
+            "'fit' shows the whole image with a blurred border; 'fill' crops to "
+            "the subject. Omit to use the default (reveal)."
+        ),
+    )
+    outro_cta: str | None = Field(
+        default=None,
+        max_length=40,
+        description=(
+            "Call-to-action line shown on the outro card above the website URL "
+            "(e.g. 'Book Your Journey'). Pass an empty string to hide it. Omit "
+            "to use the default."
+        ),
+    )
     lut_enabled: bool = Field(
         default=True,
         description="Apply the shared cinematic LUT color grade. Set false to use the style preset's own colors only.",
@@ -249,6 +268,10 @@ def resolve_render_request(payload: VideoRequest) -> dict[str, Any]:
         "website_url": payload.website_url.strip() or DEFAULT_WEBSITE_URL,
         "transition": (payload.transition or "").strip().lower() or None,
         "text_animation": (payload.text_animation or "").strip().lower() or None,
+        "frame_mode": (payload.frame_mode or "").strip().lower() or None,
+        # Preserve an explicit empty string ("" = hide the CTA); None = omitted,
+        # which lets render_video fall back to the default CTA text.
+        "outro_cta": payload.outro_cta,
         "bg_music": (payload.bg_music or "").strip().lower() or None,
         "voiceover_text": (payload.voiceover_text or "").strip() or None,
         "voiceover_voice": (payload.voiceover_voice or "").strip() or None,
@@ -646,6 +669,8 @@ async def render_video_endpoint(
                         "website_url": render_data["website_url"],
                         "transition": render_data.get("transition"),
                         "text_animation": render_data.get("text_animation"),
+                        "frame_mode": render_data.get("frame_mode"),
+                        "outro_cta": render_data.get("outro_cta"),
                         "bg_music": render_data.get("bg_music") or "luxury_chill",
                         "voiceover_text": render_data.get("voiceover_text"),
                         "voiceover_voice": render_data.get("voiceover_voice"),

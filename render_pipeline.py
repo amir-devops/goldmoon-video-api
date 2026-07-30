@@ -100,25 +100,41 @@ SCENE_TEXT_START_Y = 1470
 SCENE_LINE_SPACING = 85
 TEXT_FADE_DELAY = 0.3
 TEXT_FADE_DURATION = 0.5
+# Fallback drop-shadow applied only when a style defines no box/shadow/border,
+# so captions never become unreadable over a bright background.
+DEFAULT_CAPTION_SHADOW = "black@0.6"
 
 OUTRO_DURATION = 2.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
 DEFAULT_WEBSITE_URL = "https://www.goldmoontours.com/en"
-OUTRO_URL_FADE_DELAY = 0.4
+OUTRO_URL_FADE_DELAY = 0.55
 OUTRO_URL_FADE_DURATION = 0.5
-OUTRO_URL_FONT_SIZE = 40
-OUTRO_URL_Y = 1150
+OUTRO_URL_FONT_SIZE = 38
+OUTRO_URL_Y = 1180
 OUTRO_URL_COLOR = "#F7941D"
 LOGO_FADE_DURATION = 0.6
 LOGO_RISE_DISTANCE = 40
 
-# Outro card styling: centered logo with a brand-orange divider beneath it and
-# the website URL below that. The divider "wipes" open in step with the logo
-# fade so the card assembles rather than popping in.
+# Outro card styling: centered logo, a brand-orange divider beneath it, a
+# call-to-action line, then the website URL. The divider "wipes" open in step
+# with the logo fade so the card assembles rather than popping in.
 OUTRO_LOGO_WIDTH = 780
 OUTRO_DIVIDER_Y = 1020
 OUTRO_DIVIDER_WIDTH = 320
 OUTRO_DIVIDER_THICKNESS = 4
+
+# Call-to-action shown on the outro (visual only - it never touches the
+# voiceover or the scene captions). Set to "" (or pass outro_cta="") to hide.
+DEFAULT_OUTRO_CTA = "Book Your Journey"
+OUTRO_CTA_Y = 1085
+OUTRO_CTA_FONT_SIZE = 52
+OUTRO_CTA_COLOR = "white"
+OUTRO_CTA_FADE_DELAY = 0.35
+OUTRO_CTA_FADE_DURATION = 0.5
+
+# Loudness target for the final audio master (EBU R128). Applied once to the
+# fully mixed track so every video lands at the same professional level.
+LOUDNORM_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
 # Subscribe-button watermark: bottom-anchored, shown briefly at the very
 # start of the video and again over the outro. Only applied when
@@ -631,6 +647,29 @@ def build_outro_url_drawtext(escaped_font: str, website_url: str, fade: bool = T
     return ":".join(parts)
 
 
+def build_outro_cta_drawtext(escaped_font: str, cta_text: str, fade: bool = True) -> str:
+    """Bold, uppercase call-to-action line for the outro card. Visual only."""
+    clean_cta = escape_drawtext(sanitize_plain_text(cta_text, max_chars=40).upper())
+    parts = [
+        f"drawtext=fontfile={escaped_font}",
+        f"text='{clean_cta}'",
+        f"fontcolor={OUTRO_CTA_COLOR}",
+        f"fontsize={OUTRO_CTA_FONT_SIZE}",
+        "x=(w-text_w)/2",
+        f"y={OUTRO_CTA_Y}",
+        "shadowcolor=black@0.9",
+        "shadowx=2",
+        "shadowy=2",
+    ]
+    if fade:
+        parts.append(
+            "alpha='if(lt(t\\,"
+            f"{OUTRO_CTA_FADE_DELAY})\\,0\\,"
+            f"min((t-{OUTRO_CTA_FADE_DELAY})/{OUTRO_CTA_FADE_DURATION}\\,1))'"
+        )
+    return ":".join(parts)
+
+
 def split_scene_lines(text: str, max_lines: int = 2) -> list[str]:
     plain_text = sanitize_plain_text(text, max_chars=60)
     if not plain_text:
@@ -760,6 +799,24 @@ def build_drawtext_filters(
                 [
                     f"borderw={int(text_preset['borderw'])}",
                     f"bordercolor={text_preset.get('bordercolor', 'white@0.35')}",
+                ]
+            )
+
+        # Legibility safety net: full-screen framing can place a caption over a
+        # bright sky or pale stone where plain text vanishes. If the active
+        # style gives the text no box, shadow, or border of its own, add a soft
+        # drop-shadow so captions stay readable on ANY background. Presets that
+        # already define one of those are left exactly as-is.
+        if not (
+            text_preset.get("box")
+            or text_preset.get("shadowcolor")
+            or text_preset.get("borderw")
+        ):
+            parts.extend(
+                [
+                    f"shadowcolor={DEFAULT_CAPTION_SHADOW}",
+                    "shadowx=2",
+                    "shadowy=2",
                 ]
             )
 
@@ -1059,10 +1116,16 @@ def build_outro_with_logo_filter(
     logo_input_idx: int,
     website_url: str = DEFAULT_WEBSITE_URL,
     duration_frames: int = OUTRO_FRAMES,
+    cta_text: str = DEFAULT_OUTRO_CTA,
 ) -> str:
     escaped_font = font_path.replace(":", "\\:")
     url_drawtext = build_outro_url_drawtext(escaped_font, website_url)
     outro_duration = duration_frames / FRAMERATE
+    # Optional call-to-action line; skipped entirely when blank so callers can
+    # turn it off without changing anything else on the card.
+    cta_chain = ""
+    if cta_text and cta_text.strip():
+        cta_chain = build_outro_cta_drawtext(escaped_font, cta_text) + ","
 
     # Fade + rise the logo in instead of having it pop in at full opacity on
     # the outro card's first frame; clamp the duration so a very short outro
@@ -1091,7 +1154,7 @@ def build_outro_with_logo_filter(
         f"[{logo_input_idx}:v]scale={OUTRO_LOGO_WIDTH}:-1,format=rgba,"
         f"fade=t=in:st=0:d={logo_fade_duration}:alpha=1[logo_scaled];"
         f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-160+{logo_rise}[with_logo];"
-        f"[with_logo]{divider},{url_drawtext},"
+        f"[with_logo]{divider},{cta_chain}{url_drawtext},"
         f"fps={FRAMERATE}[v_outro]"
     )
 
@@ -1133,6 +1196,7 @@ def build_filter_complex(
     focus_points: list[tuple[float, float]] | None = None,
     frame_mode: str = DEFAULT_FRAME_MODE,
     fit_zoom: dict[str, Any] | None = None,
+    outro_cta: str = DEFAULT_OUTRO_CTA,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if len(scene_texts) != num_images:
         raise ValueError(
@@ -1170,7 +1234,7 @@ def build_filter_complex(
 
     if logo_path:
         outro_build_filters = build_outro_with_logo_filter(
-            font_path, num_images, website_url, outro_frames
+            font_path, num_images, website_url, outro_frames, cta_text=outro_cta
         )
         # -loop 1: see the subscribe-icon comment below - the logo now
         # animates (fade-in + rise), which needs an advancing timestamp;
@@ -1210,6 +1274,11 @@ def build_filter_complex(
     subscribe_input = ["-loop", "1", "-i", str(subscribe_icon_path)] if subscribe_icon_path else []
 
     has_voiceover = bool(voiceover_path and voiceover_path.exists())
+    # Master the final mix to a consistent broadcast loudness, but only when
+    # there's actually audio - running loudnorm on a pure-silence source (no
+    # music and no voiceover) would just amplify nothing / risk artifacts.
+    has_real_audio = (music_path and music_path.exists()) or has_voiceover
+    master_suffix = f",{LOUDNORM_FILTER}" if has_real_audio else ""
     if music_path and music_path.exists():
         audio_input = ["-i", str(music_path)]
         # With a voiceover, ducking pulls the bed down during speech, so it
@@ -1240,12 +1309,12 @@ def build_filter_complex(
             f"attack=10:release=110[a_music_duck];"
             f"[a_music_duck][a_voice_mix]amix=inputs=2:duration=first:"
             f"dropout_transition=0,afade=t=out:st={total_duration - 0.5}:"
-            f"d=0.5[a_final]"
+            f"d=0.5{master_suffix}[a_final]"
         )
     else:
         audio_filters = (
             f"{music_filters};"
-            f"[a_music]afade=t=out:st={total_duration - 0.5}:d=0.5[a_final]"
+            f"[a_music]afade=t=out:st={total_duration - 0.5}:d=0.5{master_suffix}[a_final]"
         )
 
     return (
@@ -1350,6 +1419,8 @@ def render_video(data: dict[str, Any]) -> Path:
       the entire wide photo is seen over the scene; "fit" shows the whole image
       at once with a blurred backdrop and zoom-out (letterbox bars); "fill"
       covers and crops to a detected focus point (legacy behavior).
+      outro_cta (default "Book Your Journey"): call-to-action line shown on the
+      outro card; pass "" to hide it. Visual only - never affects the voiceover.
       transition, text_animation, text_style, lut_enabled (default True),
       subscribe_icon_enabled (default True), zoom_override ({start, end}),
       voiceover_text (synthesized via Gemini TTS and ducked under bg_music),
@@ -1393,6 +1464,11 @@ def render_video(data: dict[str, Any]) -> Path:
 
     for image_path in image_paths:
         validate_local_image(image_path)
+
+    # Outro call-to-action text; "" (explicitly) hides it. Missing key = default.
+    outro_cta = data.get("outro_cta")
+    if outro_cta is None:
+        outro_cta = DEFAULT_OUTRO_CTA
 
     frame_mode = normalize_style_name(data.get("frame_mode") or DEFAULT_FRAME_MODE)
     if frame_mode not in FRAME_MODES:
@@ -1470,6 +1546,7 @@ def render_video(data: dict[str, Any]) -> Path:
             focus_points=focus_points,
             frame_mode=frame_mode,
             fit_zoom=fit_zoom,
+            outro_cta=outro_cta,
         )
 
         if output_path is None:

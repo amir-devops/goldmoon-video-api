@@ -169,6 +169,34 @@ export const tour = defineType({
       initialValue: 'desert_safari',
     }),
     defineField({
+      name: 'frame_mode',
+      title: 'Image Framing',
+      type: 'string',
+      description:
+        'How each photo fills the vertical frame. Reveal (recommended) fills the whole ' +
+        'screen and slowly pans so the full wide photo is seen. Fit shows the entire photo ' +
+        'at once with a soft blurred border (bars top/bottom). Fill crops to the subject (classic).',
+      options: {
+        list: [
+          {title: 'Reveal – full screen, pans across (recommended)', value: 'reveal'},
+          {title: 'Fit – whole image, blurred border', value: 'fit'},
+          {title: 'Fill – crop to subject (classic)', value: 'fill'},
+        ],
+        layout: 'radio',
+      },
+      initialValue: 'reveal',
+    }),
+    defineField({
+      name: 'outro_cta',
+      title: 'Outro Call-to-Action',
+      type: 'string',
+      description:
+        'Short line shown on the end card, above the website URL (e.g. "Book Your Journey"). ' +
+        'Leave blank to hide it. Max 40 characters.',
+      initialValue: 'Book Your Journey',
+      validation: (rule) => rule.max(40),
+    }),
+    defineField({
       name: 'transition',
       title: 'Scene Transition',
       type: 'string',

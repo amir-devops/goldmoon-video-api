@@ -67,6 +67,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${LOGO_COMMIT}/assets/logo.png" \
     && curl -fsSL -o assets/subscribe_icon.png \
         "https://raw.githubusercontent.com/amir-devops/goldmoon-video-api/${SUBSCRIBE_ICON_COMMIT}/assets/subscribe_icon.png" \
+    # Bundle the brand fonts the presets expect (Oswald / Montserrat / Playfair).
+    # Without these, every caption falls back to DejaVu Sans and all the preset
+    # typography is lost. Each fetch is non-fatal (|| true): a static bold is
+    # tried first, then the variable font, and if both fail the renderer still
+    # falls back to the installed DejaVu/Liberation fonts, so the build and
+    # rendering never break over a font download.
+    && (curl -fsSL -o assets/Oswald-Bold.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/oswald/static/Oswald-Bold.ttf" \
+        || curl -fsSL -o assets/Oswald-Bold.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" \
+        || rm -f assets/Oswald-Bold.ttf) \
+    && (curl -fsSL -o assets/Montserrat-Bold.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-Bold.ttf" \
+        || curl -fsSL -o assets/Montserrat-Bold.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf" \
+        || rm -f assets/Montserrat-Bold.ttf) \
+    && (curl -fsSL -o PlayfairDisplay-Regular.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/static/PlayfairDisplay-Regular.ttf" \
+        || curl -fsSL -o PlayfairDisplay-Regular.ttf \
+        "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" \
+        || rm -f PlayfairDisplay-Regular.ttf) \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
