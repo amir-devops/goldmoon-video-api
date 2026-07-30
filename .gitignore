@@ -13,3 +13,4 @@ images-web/
 sanity/node_modules/
 sanity/dist/
 .claude/settings.local.json
+voiceover_*.wav
