@@ -6,7 +6,10 @@ import os
 import wave
 from pathlib import Path
 
+from dotenv import load_dotenv
 from google import genai
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 from google.genai import types
 
 GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
