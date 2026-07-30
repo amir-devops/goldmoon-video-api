@@ -67,9 +67,12 @@ FRAME_MODES = ("reveal", "fit", "fill")
 UNSHARP_FILTER = "unsharp=5:5:0.5:5:5:0.0"
 
 # "reveal" pan: how far across the covered image to travel, as a fraction of the
-# full overshoot. Half a traversal reads as a calm, deliberate camera move; a
-# full traversal feels like the image is racing past.
-REVEAL_PAN_FRACTION = 0.5
+# full overshoot. Kept very small on purpose so the shot reads as a nearly
+# static, cinematic camera with only a subtle, slow drift - not a pan that races
+# the image past the viewer. Cosine easing (below) makes it start and end almost
+# perfectly still. Raise toward ~0.3 for more reveal, lower toward ~0.08 for an
+# almost locked-off camera.
+REVEAL_PAN_FRACTION = 0.12
 
 # Trim a few pixels off every source edge before framing. Some source photos
 # carry a thin baked-in border (e.g. a red/black edge from re-encoding) that the
