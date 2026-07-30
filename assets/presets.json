@@ -5,7 +5,7 @@
     "filter": "colorchannelmixer=rr=1:rg=0.5:rb=0:gr=0:gg=1:gb=0:br=0:bg=0:bb=1",
     "zoom": {
       "start": 1.0,
-      "end": 1.3,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -32,7 +32,7 @@
     "filter": "eq=saturation=1.5",
     "zoom": {
       "start": 1.0,
-      "end": 1.25,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -57,7 +57,7 @@
     "filter": "eq=saturation=1.8",
     "zoom": {
       "start": 1.0,
-      "end": 1.22,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -81,7 +81,7 @@
     "filter": "curves=darker,eq=contrast=1.2:brightness=-0.05",
     "zoom": {
       "start": 1.0,
-      "end": 1.3,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)-on*0.6",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -171,7 +171,7 @@
     "filter": "gblur=sigma=1,eq=saturation=1.1",
     "zoom": {
       "start": 1.0,
-      "end": 1.2,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -195,7 +195,7 @@
     "filter": "curves=preset=increase_contrast,colorbalance=rs=0.15:gs=0.05:bs=-0.12,eq=saturation=1.35",
     "zoom": {
       "start": 1.0,
-      "end": 1.2,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },
@@ -220,7 +220,7 @@
     "filter": "hue=s=0,eq=contrast=1.15:brightness=0.02",
     "zoom": {
       "start": 1.0,
-      "end": 1.12,
+      "end": 1.05,
       "x": "iw/2-(iw/zoom/2)",
       "y": "ih/2-(ih/zoom/2)"
     },

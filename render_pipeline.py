@@ -87,7 +87,8 @@ FIT_BG_BLUR_SIGMA = 12
 FIT_BG_BRIGHTNESS = -0.14
 FIT_BG_SATURATION = 1.15
 # Gentle pull-back so the full frame is revealed by the end of each scene.
-FIT_ZOOM_START = 1.12
+# Kept small to match the calm, near-static motion of the reveal pan.
+FIT_ZOOM_START = 1.05
 FIT_ZOOM_END = 1.0
 
 IMG_DURATION = 4.0
