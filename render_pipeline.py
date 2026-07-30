@@ -43,6 +43,44 @@ FALLBACK_FONT_ALT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.tt
 
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
+
+# Internal supersample resolution: scenes are composited/zoomed at 1.5x the
+# final size and downscaled on output, so a slow zoom never softens the image.
+SUPERSAMPLE_W = 1620
+SUPERSAMPLE_H = 2880
+
+# Scene framing modes:
+#   "reveal" (default) - fill the ENTIRE frame (no letterbox bars) with the
+#            source scaled to cover, then slowly pan across it so the parts a
+#            static 9:16 crop would hide are revealed over the scene. A wide
+#            landscape photo therefore fills the screen AND is seen in full.
+#   "fit"  - show the WHOLE source image at once fit to the frame width, with a
+#            blurred, darkened copy of the same image filling the letterbox
+#            area (bars top/bottom), plus a gentle cinematic zoom-OUT.
+#   "fill" - the legacy behavior: scale to cover the 9:16 frame and crop to a
+#            detected focus point, with the preset's own (usually zoom-in) move.
+DEFAULT_FRAME_MODE = "reveal"
+FRAME_MODES = ("reveal", "fit", "fill")
+
+# Sharpening applied after the upscale so full-screen framing of lower-res
+# source photos still reads crisp (luma-only mild unsharp mask).
+UNSHARP_FILTER = "unsharp=5:5:0.5:5:5:0.0"
+
+# "reveal" pan: how far across the covered image to travel, as a fraction of the
+# full overshoot, and a small safety inset so the very edge is never on screen.
+REVEAL_PAN_FRACTION = 1.0
+
+# Blurred-fill ("fit") background is blurred from a small copy then upscaled -
+# visually identical to blurring the full-res image but far cheaper.
+FIT_BG_W = 270
+FIT_BG_H = 480
+FIT_BG_BLUR_SIGMA = 12
+FIT_BG_BRIGHTNESS = -0.14
+FIT_BG_SATURATION = 1.15
+# Gentle pull-back so the full frame is revealed by the end of each scene.
+FIT_ZOOM_START = 1.12
+FIT_ZOOM_END = 1.0
+
 IMG_DURATION = 4.0
 XFADE_DURATION = 0.5
 FRAMERATE = 30
@@ -68,11 +106,19 @@ OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
 DEFAULT_WEBSITE_URL = "https://www.goldmoontours.com/en"
 OUTRO_URL_FADE_DELAY = 0.4
 OUTRO_URL_FADE_DURATION = 0.5
-OUTRO_URL_FONT_SIZE = 36
-OUTRO_URL_Y = 1180
+OUTRO_URL_FONT_SIZE = 40
+OUTRO_URL_Y = 1150
 OUTRO_URL_COLOR = "#F7941D"
 LOGO_FADE_DURATION = 0.6
 LOGO_RISE_DISTANCE = 40
+
+# Outro card styling: centered logo with a brand-orange divider beneath it and
+# the website URL below that. The divider "wipes" open in step with the logo
+# fade so the card assembles rather than popping in.
+OUTRO_LOGO_WIDTH = 780
+OUTRO_DIVIDER_Y = 1020
+OUTRO_DIVIDER_WIDTH = 320
+OUTRO_DIVIDER_THICKNESS = 4
 
 # Subscribe-button watermark: bottom-anchored, shown briefly at the very
 # start of the video and again over the outro. Only applied when
@@ -735,6 +781,64 @@ def build_focus_crop_expr(
     return x_expr, y_expr
 
 
+def build_reveal_pan_exprs(duration_frames: int, scene_index: int) -> tuple[str, str]:
+    """Crop x/y expressions that pan a full-frame window across the covered
+    image over the scene, cosine-eased, so the whole photo is revealed.
+
+    Cover-scaling to the frame with force_original_aspect_ratio=increase makes
+    exactly one axis overflow (the other equals the frame), so only that axis
+    actually moves - `iw-VIDEO_WIDTH` is 0 for a portrait source and positive
+    for a landscape one, and vice-versa for `ih-VIDEO_HEIGHT`. The pan
+    direction alternates per scene so successive shots don't all drift the same
+    way, which reads as more deliberate camera work.
+    """
+    last = max(duration_frames - 1, 1)
+    progress = f"min(n/{last}\\,1)"
+    eased = f"(0.5-0.5*cos(PI*{progress}))"
+    if scene_index % 2 == 1:
+        eased = f"(1-{eased})"
+    travel = REVEAL_PAN_FRACTION
+    x_expr = f"(iw-{VIDEO_WIDTH})*{travel}*{eased}"
+    y_expr = f"(ih-{VIDEO_HEIGHT})*{travel}*{eased}"
+    return x_expr, y_expr
+
+
+def build_reveal_vf_filter(
+    font_path: str,
+    text_lines: list[str],
+    preset: dict[str, Any],
+    duration_frames: int,
+    animation: str = "fade",
+    xfade_duration: float = 0.0,
+    scene_index: int = 0,
+) -> str:
+    """Full-screen reveal-pan scene chain (the default framing).
+
+    The image is cover-scaled (lanczos) so it fills the whole 9:16 frame with
+    no bars, sharpened to counter the upscale, looped into a frame stream, then
+    a full-frame crop window is panned across it so nothing is permanently
+    cropped away. Scaling before the loop keeps the expensive resize a one-shot.
+    """
+    crop_x_expr, crop_y_expr = build_reveal_pan_exprs(duration_frames, scene_index)
+    base_filter = (
+        f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
+        "force_original_aspect_ratio=increase:flags=lanczos,"
+        f"setsar=1,{UNSHARP_FILTER},format=yuv420p,"
+        f"loop={duration_frames}:1:0,setpts=N/({FRAMERATE}*TB),"
+        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}:x='{crop_x_expr}':y='{crop_y_expr}'"
+    )
+
+    if not text_lines:
+        return f"{base_filter},fps={FRAMERATE}"
+
+    text_preset = preset.get("text", {})
+    scene_duration = duration_frames / FRAMERATE
+    text_filters = build_drawtext_filters(
+        font_path, text_lines, text_preset, animation, scene_duration, xfade_duration
+    )
+    return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
+
+
 def build_scene_vf_filter(
     font_path: str,
     text_lines: list[str],
@@ -769,6 +873,61 @@ def build_scene_vf_filter(
         font_path, text_lines, text_preset, animation, scene_duration, xfade_duration
     )
     return base_filter + "," + ",".join(text_filters) + f",fps={FRAMERATE}"
+
+
+def build_fit_scene_subgraph(
+    idx: int,
+    font_path: str,
+    text_lines: list[str],
+    preset: dict[str, Any],
+    duration_frames: int,
+    animation: str = "fade",
+    xfade_duration: float = 0.0,
+    fit_zoom: dict[str, Any] | None = None,
+) -> str:
+    """Build a full labeled subgraph (from `[{idx}:v]` to `[v_scene_{idx}]`) that
+    shows the entire source image with a blurred-fill backdrop and a cinematic
+    zoom-out.
+
+    The image is split: one copy is scaled to *cover* the frame, heavily
+    blurred and darkened to form a soft backdrop; the other is scaled to *fit*
+    (so nothing is cropped) and overlaid centered on top. The composite is then
+    pulled back with zoompan so the full frame is revealed by the scene's end.
+    """
+    zoom_cfg = fit_zoom or {"start": FIT_ZOOM_START, "end": FIT_ZOOM_END}
+    z_expr = build_eased_zoom_expr(zoom_cfg, duration_frames)
+    x_expr = "iw/2-(iw/zoom/2)"
+    y_expr = "ih/2-(ih/zoom/2)"
+
+    compose = (
+        f"[{idx}:v]split=2[fit_bg_{idx}][fit_fg_{idx}];"
+        f"[fit_bg_{idx}]scale={FIT_BG_W}:{FIT_BG_H}:force_original_aspect_ratio=increase,"
+        f"crop={FIT_BG_W}:{FIT_BG_H},gblur=sigma={FIT_BG_BLUR_SIGMA},"
+        f"eq=brightness={FIT_BG_BRIGHTNESS}:saturation={FIT_BG_SATURATION},"
+        f"scale={SUPERSAMPLE_W}:{SUPERSAMPLE_H},setsar=1[fit_bgs_{idx}];"
+        f"[fit_fg_{idx}]scale={SUPERSAMPLE_W}:{SUPERSAMPLE_H}:"
+        f"force_original_aspect_ratio=decrease,setsar=1[fit_fgs_{idx}];"
+        f"[fit_bgs_{idx}][fit_fgs_{idx}]overlay=(W-w)/2:(H-h)/2,"
+        f"format=yuv420p[fit_comp_{idx}];"
+    )
+    zoompan = (
+        f"[fit_comp_{idx}]zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':"
+        f"d={duration_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={FRAMERATE}"
+    )
+
+    if not text_lines:
+        return f"{compose}{zoompan},fps={FRAMERATE}[v_scene_{idx}];"
+
+    text_preset = preset.get("text", {})
+    scene_duration = duration_frames / FRAMERATE
+    text_filters = build_drawtext_filters(
+        font_path, text_lines, text_preset, animation, scene_duration, xfade_duration
+    )
+    return (
+        f"{compose}{zoompan},"
+        + ",".join(text_filters)
+        + f",fps={FRAMERATE}[v_scene_{idx}];"
+    )
 
 
 def build_per_scene_texts(scene_texts: list[str]) -> list[list[str]]:
@@ -822,12 +981,44 @@ def build_scene_pipeline(
     animation: str = "fade",
     lut_enabled: bool = True,
     focus_points: list[tuple[float, float]] | None = None,
+    frame_mode: str = DEFAULT_FRAME_MODE,
+    fit_zoom: dict[str, Any] | None = None,
 ) -> tuple[str, float]:
     # Subscribe-icon watermark only shows over the outro now, not at the
     # start of the video - see build_filter_complex's outro_watermark.
     filter_parts: list[str] = []
 
     for i in range(num_images):
+        if frame_mode == "reveal":
+            # Full-screen cover + reveal pan (default): fills the frame with no
+            # bars and pans across so the whole image is seen.
+            scene_filter = build_reveal_vf_filter(
+                font_path,
+                scene_texts[i],
+                preset,
+                duration_frames,
+                animation,
+                xfade_duration,
+                scene_index=i,
+            )
+            filter_parts.append(f"[{i}:v]{scene_filter}[v_scene_{i}];")
+            continue
+        if frame_mode == "fit":
+            # Whole-image blurred-fill composition + zoom-out.
+            filter_parts.append(
+                build_fit_scene_subgraph(
+                    i,
+                    font_path,
+                    scene_texts[i],
+                    preset,
+                    duration_frames,
+                    animation,
+                    xfade_duration,
+                    fit_zoom,
+                )
+            )
+            continue
+        # Legacy fill: cover the frame and crop to the detected focus point.
         focus_point = focus_points[i] if focus_points else (0.5, 0.5)
         scene_filter = build_scene_vf_filter(
             font_path,
@@ -880,12 +1071,27 @@ def build_outro_with_logo_filter(
     logo_progress = ease_in_out_ratio_expr(f"min(t/{logo_fade_duration}\\,1)")
     logo_rise = f"({LOGO_RISE_DISTANCE}*(1-{logo_progress}))"
 
+    # Brand-orange divider drawn just beneath the centered logo, wiped open from
+    # the middle in step with the logo fade so the card assembles itself instead
+    # of appearing all at once. Its half-width grows 0 -> DIVIDER_HALF_WIDTH.
+    # NB: inside drawbox's x/w expressions, `w`/`h` mean the BOX's own size, so
+    # the frame width must be referenced as `iw` to center it correctly.
+    divider_half = f"({OUTRO_DIVIDER_WIDTH // 2}*{logo_progress})"
+    divider = (
+        f"drawbox=x='(iw/2)-{divider_half}':y={OUTRO_DIVIDER_Y}:"
+        f"w='2*{divider_half}':h={OUTRO_DIVIDER_THICKNESS}:"
+        f"color={OUTRO_URL_COLOR}@0.95:t=fill"
+    )
+
     return (
-        f"color=c=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={FRAMERATE}:d={outro_duration}[bg];"
-        f"[{logo_input_idx}:v]scale=850:-1,format=rgba,"
+        # Warm near-black backdrop with a soft radial vignette so the eye is
+        # pulled to the centered logo instead of a flat black rectangle.
+        f"color=c=0x0B0B0D:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r={FRAMERATE}:d={outro_duration},"
+        f"vignette=angle=PI/5[bg];"
+        f"[{logo_input_idx}:v]scale={OUTRO_LOGO_WIDTH}:-1,format=rgba,"
         f"fade=t=in:st=0:d={logo_fade_duration}:alpha=1[logo_scaled];"
-        f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-120+{logo_rise}[with_logo];"
-        f"[with_logo]{url_drawtext},"
+        f"[bg][logo_scaled]overlay=(W-w)/2:(H-h)/2-160+{logo_rise}[with_logo];"
+        f"[with_logo]{divider},{url_drawtext},"
         f"fps={FRAMERATE}[v_outro]"
     )
 
@@ -925,6 +1131,8 @@ def build_filter_complex(
     voiceover_path: Path | None = None,
     voiceover_duration: float | None = None,
     focus_points: list[tuple[float, float]] | None = None,
+    frame_mode: str = DEFAULT_FRAME_MODE,
+    fit_zoom: dict[str, Any] | None = None,
 ) -> tuple[str, list[str], list[str], list[str], float]:
     if len(scene_texts) != num_images:
         raise ValueError(
@@ -953,6 +1161,8 @@ def build_filter_complex(
         animation,
         lut_enabled,
         focus_points,
+        frame_mode,
+        fit_zoom,
     )
 
     outro_offset = images_duration - xfade_duration
@@ -1135,6 +1345,11 @@ def render_video(data: dict[str, Any]) -> Path:
       scene_texts: list[str]       (2-4 items; if fewer than images, last text repeats)
     Optional:
       bg_music, style, debug_mode, logo_path, website_url, output_path,
+      frame_mode ("reveal" default | "fit" | "fill"): "reveal" fills the whole
+      frame (no bars) with the source scaled to cover, then pans across it so
+      the entire wide photo is seen over the scene; "fit" shows the whole image
+      at once with a blurred backdrop and zoom-out (letterbox bars); "fill"
+      covers and crops to a detected focus point (legacy behavior).
       transition, text_animation, text_style, lut_enabled (default True),
       subscribe_icon_enabled (default True), zoom_override ({start, end}),
       voiceover_text (synthesized via Gemini TTS and ducked under bg_music),
@@ -1179,12 +1394,35 @@ def render_video(data: dict[str, Any]) -> Path:
     for image_path in image_paths:
         validate_local_image(image_path)
 
-    focus_points = [detect_focus_point(image_path) for image_path in image_paths]
+    frame_mode = normalize_style_name(data.get("frame_mode") or DEFAULT_FRAME_MODE)
+    if frame_mode not in FRAME_MODES:
+        raise RenderError(
+            f"Unknown frame_mode '{data.get('frame_mode')}'. Choose one of: "
+            f"{', '.join(FRAME_MODES)}"
+        )
+
+    zoom_override = data.get("zoom_override")
+    # In fit mode the source is never cropped, so the preset's own (zoom-in)
+    # move doesn't apply; use the gentle pull-back defaults, letting a
+    # zoom_override tweak the start/end if the caller wants.
+    fit_zoom = {"start": FIT_ZOOM_START, "end": FIT_ZOOM_END}
+    if zoom_override:
+        if zoom_override.get("start") is not None:
+            fit_zoom["start"] = float(zoom_override["start"])
+        if zoom_override.get("end") is not None:
+            fit_zoom["end"] = float(zoom_override["end"])
+
+    # Focus-point detection only matters for the "fill" crop; "fit" shows the
+    # whole image, so skip the OpenCV pass entirely in that (default) case.
+    if frame_mode == "fill":
+        focus_points = [detect_focus_point(image_path) for image_path in image_paths]
+    else:
+        focus_points = None
 
     resolved_style, preset = resolve_preset(style_name)
     text_style = resolve_text_style(preset.get("text", {}), data.get("text_style"))
     preset = {**preset, "text": text_style}
-    preset = apply_zoom_override(preset, data.get("zoom_override"))
+    preset = apply_zoom_override(preset, zoom_override)
     transition = pick_transition(data.get("transition"), preset.get("transition"))
     font_path = resolve_font_for_preset(preset)
     music_path = resolve_bg_music(bg_music)
@@ -1230,6 +1468,8 @@ def render_video(data: dict[str, Any]) -> Path:
             voiceover_path=voiceover_path,
             voiceover_duration=voiceover_duration,
             focus_points=focus_points,
+            frame_mode=frame_mode,
+            fit_zoom=fit_zoom,
         )
 
         if output_path is None:
@@ -1252,13 +1492,17 @@ def render_video(data: dict[str, Any]) -> Path:
             "-c:v",
             "libx264",
             "-preset",
-            "faster",
+            "medium",
             "-crf",
-            "22",
+            "19",
+            "-profile:v",
+            "high",
+            "-level",
+            "4.2",
             "-c:a",
             "aac",
             "-b:a",
-            "192k",
+            "256k",
             "-pix_fmt",
             "yuv420p",
             "-r",

@@ -287,9 +287,11 @@ class TestBuildFilterComplex:
         assert debug_duration < normal_duration
 
     def test_focus_points_shift_the_crop_window(self, preset, scene_texts):
+        # Focus-point cropping only applies in the legacy "fill" frame mode.
         filter_complex, *_ = rp.build_filter_complex(
             2, "font.ttf", scene_texts, None, None, preset,
             focus_points=[(0.8, 0.2), (0.5, 0.5)],
+            frame_mode="fill",
         )
         assert "clip(0.8*iw-810.0" in filter_complex
         assert "clip(0.2*ih-1440.0" in filter_complex
@@ -298,9 +300,32 @@ class TestBuildFilterComplex:
 
     def test_no_focus_points_defaults_to_center_crop(self, preset, scene_texts):
         filter_complex, *_ = rp.build_filter_complex(
-            2, "font.ttf", scene_texts, None, None, preset
+            2, "font.ttf", scene_texts, None, None, preset, frame_mode="fill"
         )
         assert filter_complex.count("clip(0.5*iw-810.0") == 2
+
+    def test_reveal_is_default_and_pans_full_screen(self, preset, scene_texts):
+        # Default (reveal) mode fills the frame (cover scale) and pans instead of
+        # cropping to a fixed window - so no focus-crop clip() and no blur bars.
+        filter_complex, *_ = rp.build_filter_complex(
+            2, "font.ttf", scene_texts, None, None, preset
+        )
+        assert "clip(" not in filter_complex
+        assert "gblur" not in filter_complex
+        assert filter_complex.count("force_original_aspect_ratio=increase") == 2
+        assert "flags=lanczos" in filter_complex
+        # A moving crop window (references the frame counter n) = the reveal pan.
+        assert "crop=1080:1920:x=" in filter_complex
+
+    def test_fit_mode_shows_whole_image_with_blur(self, preset, scene_texts):
+        filter_complex, *_ = rp.build_filter_complex(
+            2, "font.ttf", scene_texts, None, None, preset, frame_mode="fit"
+        )
+        assert "clip(" not in filter_complex
+        assert filter_complex.count("force_original_aspect_ratio=decrease") == 2
+        assert "gblur" in filter_complex
+        assert "[fit_comp_0]" in filter_complex
+        assert "[fit_comp_1]" in filter_complex
 
 
 # ---------------------------------------------------------------------------
