@@ -67,8 +67,14 @@ FRAME_MODES = ("reveal", "fit", "fill")
 UNSHARP_FILTER = "unsharp=5:5:0.5:5:5:0.0"
 
 # "reveal" pan: how far across the covered image to travel, as a fraction of the
-# full overshoot, and a small safety inset so the very edge is never on screen.
-REVEAL_PAN_FRACTION = 1.0
+# full overshoot. Half a traversal reads as a calm, deliberate camera move; a
+# full traversal feels like the image is racing past.
+REVEAL_PAN_FRACTION = 0.5
+
+# Trim a few pixels off every source edge before framing. Some source photos
+# carry a thin baked-in border (e.g. a red/black edge from re-encoding) that the
+# old center-crop hid but the full-frame reveal would otherwise expose.
+EDGE_TRIM_PX = 14
 
 # Blurred-fill ("fit") background is blurred from a small copy then upscaled -
 # visually identical to blurring the full-res image but far cheaper.
@@ -100,9 +106,12 @@ SCENE_TEXT_START_Y = 1470
 SCENE_LINE_SPACING = 85
 TEXT_FADE_DELAY = 0.3
 TEXT_FADE_DURATION = 0.5
-# Fallback drop-shadow applied only when a style defines no box/shadow/border,
-# so captions never become unreadable over a bright background.
-DEFAULT_CAPTION_SHADOW = "black@0.6"
+# Caption legibility: every caption gets a drop-shadow, and any background box a
+# style defines is bumped to at least a readable opacity with generous padding,
+# so text stays clear over bright skies/pale stone regardless of the font.
+DEFAULT_CAPTION_SHADOW = "black@0.75"
+CAPTION_MIN_BOX_OPACITY = 0.55
+CAPTION_MIN_BOX_PADDING = 26
 
 OUTRO_DURATION = 2.0
 OUTRO_FRAMES = int(OUTRO_DURATION * FRAMERATE)
@@ -727,6 +736,19 @@ def build_text_fontsize_expr(
     return f"({start_size}+({base_fontsize}-{start_size})*{progress})"
 
 
+def ensure_box_opacity(boxcolor: str, minimum: float = CAPTION_MIN_BOX_OPACITY) -> str:
+    """Raise a caption box's alpha to at least `minimum` for legibility.
+
+    Accepts FFmpeg color forms like "black@0.35" (bumped to "black@0.55") and
+    leaves a fully-opaque color (no "@alpha") untouched.
+    """
+    match = re.match(r"^(.*?)@([0-9]*\.?[0-9]+)$", boxcolor.strip())
+    if not match:
+        return boxcolor
+    base, alpha = match.group(1), float(match.group(2))
+    return f"{base}@{max(alpha, minimum):g}"
+
+
 def build_drawtext_filters(
     font_path: str,
     text_lines: list[str],
@@ -778,13 +800,16 @@ def build_drawtext_filters(
             parts.extend(
                 [
                     "box=1",
-                    f"boxcolor={text_preset.get('boxcolor', 'black@0.4')}",
-                    f"boxborderw={int(text_preset.get('boxborderw', 20))}",
+                    f"boxcolor={ensure_box_opacity(text_preset.get('boxcolor', 'black@0.4'))}",
+                    f"boxborderw={max(int(text_preset.get('boxborderw', 20)), CAPTION_MIN_BOX_PADDING)}",
                 ]
             )
         else:
             parts.append("box=0")
 
+        # Always give the caption a drop-shadow (use the style's own if defined,
+        # otherwise a strong default) so text separates from the background even
+        # when the font is thin or the box is translucent.
         if text_preset.get("shadowcolor"):
             parts.extend(
                 [
@@ -793,30 +818,16 @@ def build_drawtext_filters(
                     f"shadowy={int(text_preset.get('shadowy', 2))}",
                 ]
             )
+        else:
+            parts.extend(
+                [f"shadowcolor={DEFAULT_CAPTION_SHADOW}", "shadowx=2", "shadowy=2"]
+            )
 
         if text_preset.get("borderw"):
             parts.extend(
                 [
                     f"borderw={int(text_preset['borderw'])}",
                     f"bordercolor={text_preset.get('bordercolor', 'white@0.35')}",
-                ]
-            )
-
-        # Legibility safety net: full-screen framing can place a caption over a
-        # bright sky or pale stone where plain text vanishes. If the active
-        # style gives the text no box, shadow, or border of its own, add a soft
-        # drop-shadow so captions stay readable on ANY background. Presets that
-        # already define one of those are left exactly as-is.
-        if not (
-            text_preset.get("box")
-            or text_preset.get("shadowcolor")
-            or text_preset.get("borderw")
-        ):
-            parts.extend(
-                [
-                    f"shadowcolor={DEFAULT_CAPTION_SHADOW}",
-                    "shadowx=2",
-                    "shadowy=2",
                 ]
             )
 
@@ -878,6 +889,8 @@ def build_reveal_vf_filter(
     """
     crop_x_expr, crop_y_expr = build_reveal_pan_exprs(duration_frames, scene_index)
     base_filter = (
+        # Trim any baked-in edge border off the source first (see EDGE_TRIM_PX).
+        f"crop=iw-{2 * EDGE_TRIM_PX}:ih-{2 * EDGE_TRIM_PX},"
         f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
         "force_original_aspect_ratio=increase:flags=lanczos,"
         f"setsar=1,{UNSHARP_FILTER},format=yuv420p,"
@@ -957,7 +970,8 @@ def build_fit_scene_subgraph(
     y_expr = "ih/2-(ih/zoom/2)"
 
     compose = (
-        f"[{idx}:v]split=2[fit_bg_{idx}][fit_fg_{idx}];"
+        f"[{idx}:v]crop=iw-{2 * EDGE_TRIM_PX}:ih-{2 * EDGE_TRIM_PX},"
+        f"split=2[fit_bg_{idx}][fit_fg_{idx}];"
         f"[fit_bg_{idx}]scale={FIT_BG_W}:{FIT_BG_H}:force_original_aspect_ratio=increase,"
         f"crop={FIT_BG_W}:{FIT_BG_H},gblur=sigma={FIT_BG_BLUR_SIGMA},"
         f"eq=brightness={FIT_BG_BRIGHTNESS}:saturation={FIT_BG_SATURATION},"
